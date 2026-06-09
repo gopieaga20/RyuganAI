@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Ryugan AI — NSE/BSE Trading Command Center</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script defer src="script.js?v=18"></script>
+</head>
+
+<body>
+
+  <div class="ov" id="ov">
+    <div class="ov-inner">
+      <div class="ov-spin"></div>
+      <p id="ovMsg">LOADING...</p>
+    </div>
+  </div>
+
+  <div class="layout">
+
+    <!-- ═══════════ SIDEBAR ═══════════ -->
+    <aside class="sidebar">
+      <div class="sb-logo">
+        <div class="sb-logo-mark">竜</div>
+        <div>
+          <div class="sb-name">RYUGAN AI</div>
+          <div class="sb-sub">NSE · BSE · F&amp;O</div>
+        </div>
+      </div>
+
+      <nav class="sb-nav">
+        <button class="nav-btn active" onclick="switchTab('nifty')" data-tab="nifty">
+          <span class="nav-icon">◈</span> Nifty Live
+        </button>
+        <button class="nav-btn" onclick="switchTab('signals')" data-tab="signals">
+          <span class="nav-icon">⚡</span> Signal Engine
+        </button>
+        <button class="nav-btn" onclick="switchTab('morning')" data-tab="morning">
+          <span class="nav-icon">◉</span> Morning Brief
+        </button>
+        <button class="nav-btn" onclick="switchTab('fo')" data-tab="fo">
+          <span class="nav-icon">◎</span> F&amp;O Dashboard
+        </button>
+        <button class="nav-btn" onclick="switchTab('sectors')" data-tab="sectors">
+          <span class="nav-icon">▦</span> Sectors
+        </button>
+        <button class="nav-btn" onclick="switchTab('backtest')" data-tab="backtest">
+          <span class="nav-icon">◷</span> Backtest
+        </button>
+        <button class="nav-btn" onclick="switchTab('analyst')" data-tab="analyst">
+          <span class="nav-icon">◈</span> AI Analyst
+        </button>
+        <button class="nav-btn" onclick="switchTab('tradelog')" data-tab="tradelog">
+          <span class="nav-icon">≡</span> Trade Log
+        </button>
+        <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
+          <span class="nav-icon">◆</span> Paper Trading
+        </button>
+      </nav>
+
+      <!-- Market status -->
+      <div class="sb-market">
+        <div class="market-status-dot" id="mpulse"></div>
+        <span id="mstatus-txt">Checking...</span>
+      </div>
+      <div class="sb-clock" id="clock">--:--:-- IST</div>
+
+      <!-- Tickers -->
+      <div class="sb-tickers">
+        <div class="sbt" onclick="switchTab('nifty')">
+          <div class="sbt-name">NIFTY 50</div>
+          <div class="sbt-val" id="h-nifty">--,---</div>
+          <div class="sbt-chg" id="h-nifty-c">--</div>
+        </div>
+        <div class="sbt" onclick="switchTab('nifty')">
+          <div class="sbt-name">BANK NIFTY</div>
+          <div class="sbt-val" id="h-bnifty">--,---</div>
+          <div class="sbt-chg" id="h-bnifty-c">--</div>
+        </div>
+        <div class="sbt">
+          <div class="sbt-name">INDIA VIX</div>
+          <div class="sbt-val vix" id="h-vix">--.-</div>
+          <div class="sbt-chg" id="h-vix-c">--</div>
+        </div>
+        <div class="sbt">
+          <div class="sbt-name">USD/INR</div>
+          <div class="sbt-val" id="h-usdinr">--.-</div>
+          <div class="sbt-chg">Forex</div>
+        </div>
+      </div>
+
+      <!-- API Key -->
+      <div class="sb-apikey">
+        <div class="sba-label">Anthropic API Key</div>
+        <div class="sba-row">
+          <input type="password" id="api-key-input" placeholder="sk-ant-..." class="sba-input" />
+          <button class="sba-btn" onclick="saveApiKey()">Save</button>
+        </div>
+        <div class="sba-status" id="api-key-status"></div>
+      </div>
+    </aside>
+
+    <!-- ═══════════ MAIN ═══════════ -->
+    <main class="main">
+
+      <!-- News ticker -->
+      <div class="nticker-bar">
+        <span class="nticker-live">LIVE</span>
+        <div class="nticker-text" id="nticker">Loading market updates...</div>
+      </div>
+
+      <!-- ══════ TAB: NIFTY LIVE ══════ -->
+      <section class="tab-pane active" id="tab-nifty">
+        <div class="signal-hero">
+          <div class="sh-label" id="sh-sym-label">NIFTY 50 — INTRADAY SIGNAL</div>
+          <div class="sh-price up" id="n-price">--,---.-</div>
+          <div class="sh-change up" id="n-change">+-- (+-.--%) · IST --:--</div>
+          <div id="nifty-signal-badge">
+            <div class="signal-pill sp-hold">⏳ LOADING SIGNAL...</div>
+          </div>
+          <div class="sh-levels" id="n-levels">
+            <div class="lvl-item">
+              <div class="lvl-label">ENTRY</div>
+              <div class="lvl-val entry" id="nl-entry">--</div>
+            </div>
+            <div class="lvl-item">
+              <div class="lvl-label">STOP LOSS</div>
+              <div class="lvl-val sl" id="nl-sl">--</div>
+            </div>
+            <div class="lvl-item">
+              <div class="lvl-label">TARGET 1</div>
+              <div class="lvl-val up" id="nl-t1">--</div>
+            </div>
+            <div class="lvl-item">
+              <div class="lvl-label">TARGET 2</div>
+              <div class="lvl-val up" id="nl-t2">--</div>
+            </div>
+            <div class="lvl-item">
+              <div class="lvl-label">RISK:REWARD</div>
+              <div class="lvl-val accent" id="nl-rr">--</div>
+            </div>
+            <div class="lvl-item">
+              <div class="lvl-label">CONFIDENCE</div>
+              <div class="lvl-val accent" id="nl-conf">--%</div>
+            </div>
+          </div>
+          <div class="sh-actions">
+            <button class="btn btn-primary" onclick="refreshNiftySignal()" id="niftyRefreshBtn">↺ Refresh Signal</button>
+            <button class="btn btn-ghost" onclick="refreshNiftySignal('BANK NIFTY')">Bank Nifty</button>
+            <button class="btn btn-ghost" onclick="refreshNiftySignal('SENSEX')">Sensex</button>
+            <button class="btn btn-green btn-paper-trade" onclick="executeCurrentSignal()">⚡ Paper Trade</button>
+          </div>
+        </div>
+
+        <div class="ind-tiles" id="n-ind-tiles">
+          <div class="ind-tile">
+            <div class="it-name">RSI (14)</div>
+            <div class="it-val" id="ni-rsi">--</div>
+            <div class="it-sig" id="ni-rsi-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-rsi-b" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="ind-tile">
+            <div class="it-name">MACD</div>
+            <div class="it-val" id="ni-macd">--</div>
+            <div class="it-sig" id="ni-macd-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-macd-b" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="ind-tile">
+            <div class="it-name">BOLLINGER</div>
+            <div class="it-val" id="ni-bb">--</div>
+            <div class="it-sig" id="ni-bb-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-bb-b" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="ind-tile">
+            <div class="it-name">VWAP</div>
+            <div class="it-val" id="ni-vwap">--</div>
+            <div class="it-sig" id="ni-vwap-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-vwap-b" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="ind-tile">
+            <div class="it-name">EMA 9/21</div>
+            <div class="it-val" id="ni-ema">--</div>
+            <div class="it-sig" id="ni-ema-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-ema-b" style="width:50%"></div>
+            </div>
+          </div>
+          <div class="ind-tile">
+            <div class="it-name">VOLUME</div>
+            <div class="it-val" id="ni-vol">--</div>
+            <div class="it-sig" id="ni-vol-s">--</div>
+            <div class="it-bar">
+              <div class="it-fill" id="ni-vol-b" style="width:50%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="g2 mt12">
+          <div class="card">
+            <div class="card-title">Analyst Interpretation</div>
+            <div class="anote" id="n-anote">Click Refresh Signal to get live analysis...</div>
+            <div class="news-note" id="n-news-impact"></div>
+            <div id="nifty-news-feed" class="news-feed-block"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Global Cues <span id="gc-ts" style="font-size:9px;color:var(--text3);font-weight:normal;margin-left:8px;"></span></div>
+            <div class="srow" style="margin-bottom:10px;">
+              <span class="sl">Global Bias</span>
+              <span class="sv" id="gc-bias" style="font-weight:800;letter-spacing:.05em;">—</span>
+            </div>
+            <div class="srow"><span class="sl">GIFT Nifty / SGX</span><span class="sv" id="gc-sgx">--</span>
+            </div>
+            <div class="srow"><span class="sl">Dow Jones Futures</span><span class="sv" id="gc-dow">--</span>
+            </div>
+            <div class="srow"><span class="sl">Crude Oil WTI</span><span class="sv" id="gc-crude">--</span>
+            </div>
+            <div class="srow"><span class="sl">USD / INR</span><span class="sv" id="gc-usd">--</span></div>
+            <div class="srow"><span class="sl">Gold (COMEX)</span><span class="sv" id="gc-gold">--</span></div>
+            <div class="srow"><span class="sl">DXY Dollar Index</span><span class="sv" id="gc-dxy">--</span>
+            </div>
+            <button class="btn btn-ghost btn-sm mt8" style="width:100%" onclick="fetchGlobalCues()">↺ REFRESH CUES</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: SIGNAL ENGINE ══════ -->
+      <section class="tab-pane" id="tab-signals">
+        <div class="se-controls">
+          <div class="fg" style="flex:2">
+            <label>Symbol / Index</label>
+            <input type="text" id="sym-input" list="sym-list" placeholder="NIFTY 50, RELIANCE, BANKNIFTY 48000 CE..." oninput="debounceSearch(event, 'sym-list')" />
+            <datalist id="sym-list">
+              <!-- Dynamically populated from Yahoo Finance autosuggest -->
+            </datalist>
+          </div>
+          <div class="fg"><label>Segment</label><select id="seg-select">
+              <option value="equity">NSE Equity</option>
+              <option value="index">Index</option>
+              <option value="fo">F&amp;O</option>
+              <option value="options">Options</option>
+            </select></div>
+          <div class="fg"><label>Timeframe</label><select id="tf-select">
+              <option value="5min">5 Min</option>
+              <option value="15min" selected>15 Min</option>
+              <option value="30min">30 Min</option>
+              <option value="1hr">1 Hour</option>
+            </select></div>
+          <button class="btn btn-primary" onclick="generateSignal()">ANALYZE ▶</button>
+        </div>
+        <div class="quick-tags">
+          <span class="qt-label">Quick:</span>
+          <span class="qtag" onclick="qs('NIFTY 50')">Nifty 50</span>
+          <span class="qtag" onclick="qs('BANK NIFTY')">Bank Nifty</span>
+          <span class="qtag" onclick="qs('SENSEX')">Sensex</span>
+          <span class="qtag" onclick="qs('RELIANCE')">Reliance</span>
+          <span class="qtag" onclick="qs('HDFC BANK')">HDFC Bank</span>
+          <span class="qtag" onclick="qs('INFOSYS')">Infosys</span>
+          <span class="qtag" onclick="qs('TCS')">TCS</span>
+          <span class="qtag" onclick="qs('ICICI BANK')">ICICI Bank</span>
+          <span class="qtag" onclick="qs('ADANI ENT')">Adani Ent</span>
+          <span class="qtag" onclick="qs('TATA MOTORS')">Tata Motors</span>
+        </div>
+        <div id="sig-output"></div>
+        <div class="g2 mt12">
+          <!-- DYNAMIC WATCHLIST -->
+          <div class="card">
+            <div class="wl-header">
+              <select class="wl-list-select" id="wl-list-select" onchange="WL.switchList(this.value)"></select>
+              <button class="btn btn-ghost btn-sm" onclick="WL.promptNewList()" title="Create new list">+ List</button>
+              <button class="btn btn-ghost btn-sm" onclick="WL.refresh()" title="Refresh prices">↺</button>
+            </div>
+            <div class="wl-add-row">
+              <input type="text" id="wl-add-sym" list="sym-list" placeholder="Search symbol or option..." class="wl-add-input"
+                oninput="debounceSearch(event, 'sym-list')" onkeydown="if(event.key==='Enter')WL.addSymbol()" />
+              <button class="btn btn-primary btn-sm" onclick="WL.addSymbol()">Add</button>
+            </div>
+            <div id="wl-items"><!-- Rendered by WatchlistManager --></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Recent Signals</div>
+            <div id="recent-signals">
+              <div class="empty-state">No signals generated yet</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: MORNING BRIEF ══════ -->
+      <section class="tab-pane" id="tab-morning">
+        <div class="g2 mb12">
+          <div class="card">
+            <div class="card-title">Pre-Market Intelligence</div>
+            <div id="morning-content">
+              <div class="empty-state">Click below to generate morning brief</div>
+            </div>
+            <button class="btn btn-primary" style="width:100%;margin-top:12px" onclick="generateMorningBrief()">GENERATE
+              MORNING BRIEF</button>
+          </div>
+          <div class="card">
+            <div class="card-title">Market News</div>
+            <div id="news-area">
+              <div class="empty-state">News will appear after Morning Brief</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">FII / DII Activity</div>
+          <table class="dtbl">
+            <thead>
+              <tr>
+                <th>Participant</th>
+                <th>Buy (₹ Cr)</th>
+                <th>Sell (₹ Cr)</th>
+                <th>Net (₹ Cr)</th>
+                <th>Trend</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody id="fii-table">
+              <tr>
+                <td colspan="6" class="empty-cell">Generate Morning Brief to load FII/DII data</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: F&O DASHBOARD ══════ -->
+      <section class="tab-pane" id="tab-fo">
+        <div class="filter-bar mb12">
+          <div class="fg" style="flex:2"><label>Index / Stock</label><input type="text" id="fo-sym" list="sym-list"
+              placeholder="NIFTY 50, BANK NIFTY, RELIANCE..." /></div>
+          <div class="fg"><label>Expiry</label><select id="fo-expiry">
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select></div>
+          <button class="btn btn-primary" onclick="analyzeFO()">ANALYZE F&amp;O ▶</button>
+        </div>
+        <div class="g3 mb12">
+          <div class="card">
+            <div class="card-title">PCR</div>
+            <div class="fo-box">
+              <div class="fo-label">PUT-CALL RATIO</div>
+              <div class="fo-val" id="pcr-val">--</div>
+              <div class="fo-sub" id="pcr-int">Enter symbol and analyze</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Max Pain</div>
+            <div class="fo-box">
+              <div class="fo-label">MAX PAIN STRIKE</div>
+              <div class="fo-val accent" id="mp-val">--,---</div>
+              <div class="fo-sub" id="mp-note">Enter symbol and analyze</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Implied Vol</div>
+            <div class="fo-box">
+              <div class="fo-label">IV LEVEL</div>
+              <div class="fo-val purple" id="iv-val">--%</div>
+              <div class="fo-sub" id="iv-note">Enter symbol and analyze</div>
+            </div>
+          </div>
+        </div>
+        <div class="g2">
+          <div class="card">
+            <div class="card-title">Options Greeks</div>
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Type</th>
+                  <th>Delta</th>
+                  <th>Gamma</th>
+                  <th>Theta</th>
+                  <th>Vega</th>
+                  <th>OI Chg</th>
+                </tr>
+              </thead>
+              <tbody id="greeks-tbl">
+                <tr>
+                  <td colspan="7" class="empty-cell">Analyze F&amp;O to load Greeks</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-title">OI Buildup</div>
+            <div id="oi-area">
+              <div class="empty-state">Analyze F&amp;O to load OI data</div>
+            </div>
+          </div>
+        </div>
+        <!-- VIX Panel -->
+        <div class="card mt12">
+          <div class="card-title">India VIX Dashboard</div>
+          <div class="g4">
+            <div class="stat-card">
+              <div class="sc-l">VIX Level</div>
+              <div class="sc-v" id="vix-big">--.-</div>
+              <div class="sc-s" id="vix-zone">--</div>
+            </div>
+            <div class="stat-card">
+              <div class="sc-l">Sentiment</div>
+              <div class="sc-v" id="vix-mood">--</div>
+            </div>
+            <div class="stat-card">
+              <div class="sc-l">Premium</div>
+              <div class="sc-v" id="vix-prem">--</div>
+            </div>
+            <div class="stat-card">
+              <div class="sc-l">Best Strategy</div>
+              <div class="sc-v small" id="vix-strat">--</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: SECTORS ══════ -->
+      <section class="tab-pane" id="tab-sectors">
+        <div class="card mb12">
+          <div class="card-title">Sectoral Heatmap</div>
+          <div class="sector-grid" id="sector-grid">
+            <div class="sbox s-n">
+              <div class="sn">BANKING</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">IT</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">PHARMA</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">AUTO</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">FMCG</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">METAL</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">ENERGY</div>
+              <div class="sc">—</div>
+            </div>
+            <div class="sbox s-n">
+              <div class="sn">REALTY</div>
+              <div class="sc">—</div>
+            </div>
+          </div>
+          <button class="btn btn-primary mt8" style="width:100%" onclick="loadSectors()">↺ FETCH SECTOR
+            ANALYSIS</button>
+        </div>
+        <div class="g2">
+          <div class="card">
+            <div class="card-title">Rotation Signal</div>
+            <div id="rotation-area">
+              <div class="empty-state">Load sector data first</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Top Intraday Picks</div>
+            <div id="sector-picks">
+              <div class="empty-state">Load sector data first</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: BACKTEST ══════ -->
+      <section class="tab-pane" id="tab-backtest">
+        <div class="bt-tabs">
+          <button class="bt-tab active" onclick="switchBTTab('bt-setup')">Setup</button>
+          <button class="bt-tab" onclick="switchBTTab('bt-results')">Results</button>
+          <button class="bt-tab" onclick="switchBTTab('bt-trades')">Trades</button>
+          <button class="bt-tab" onclick="switchBTTab('bt-chart')">Chart</button>
+          <button class="bt-tab" onclick="switchBTTab('bt-replay')">Replay</button>
+          <button class="bt-tab" onclick="switchBTTab('bt-accuracy')">Accuracy</button>
+        </div>
+
+        <!-- BT SETUP -->
+        <div id="bt-setup">
+          <div class="g2 mb12">
+            <div class="card">
+              <div class="card-title">Data Configuration</div>
+              <div class="filter-bar flex-wrap mb12">
+                <div class="fg"><label>Symbol</label>
+                  <select id="bt-sym">
+                    <option value="^NSEI">Nifty 50</option>
+                    <option value="^NSEBANK">Bank Nifty</option>
+                    <option value="^BSESN">Sensex</option>
+                    <option value="RELIANCE.NS">Reliance</option>
+                    <option value="HDFCBANK.NS">HDFC Bank</option>
+                    <option value="TCS.NS">TCS</option>
+                    <option value="INFY.NS">Infosys</option>
+                    <option value="ICICIBANK.NS">ICICI Bank</option>
+                  </select>
+                </div>
+                <div class="fg"><label>Timeframe</label>
+                  <select id="bt-tf">
+                    <option value="5m">5 Min</option>
+                    <option value="15m" selected>15 Min</option>
+                    <option value="30m">30 Min</option>
+                    <option value="1h">1 Hour</option>
+                    <option value="1d">Daily</option>
+                  </select>
+                </div>
+                <div class="fg"><label>Period</label>
+                  <select id="bt-period">
+                    <option value="1mo">1 Month</option>
+                    <option value="3mo" selected>3 Months</option>
+                    <option value="6mo">6 Months</option>
+                    <option value="1y">1 Year</option>
+                  </select>
+                </div>
+                <div class="fg"><label>Segment</label>
+                  <select id="bt-segment" onchange="updateBTSegment()">
+                    <option value="intraday">Intraday Equity</option>
+                    <option value="fo_futures">F&amp;O Futures</option>
+                    <option value="fo_options">F&amp;O Options</option>
+                  </select>
+                </div>
+              </div>
+              <div class="filter-bar flex-wrap mb12" id="fo-lot-row" style="display:none">
+                <div class="fg"><label>Lot Size</label><input type="number" id="bt-lotsize" value="50" min="1" /></div>
+                <div class="fg"><label>Lots to Trade</label><input type="number" id="bt-lots" value="1" min="1" /></div>
+                <div class="fg" id="fo-options-row" style="display:none"><label>Option Type</label>
+                  <select id="bt-opttype">
+                    <option value="CE">Call (CE)</option>
+                    <option value="PE">Put (PE)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="filter-bar flex-wrap">
+                <div class="fg"><label>Capital per Trade (₹)</label><input type="number" id="bt-capital" value="50000"
+                    min="10000" step="10000" /></div>
+                <button class="btn btn-primary" onclick="btFetchData()" id="bt-fetch-btn">FETCH DATA ▶</button>
+              </div>
+              <div class="prog-bar mt8">
+                <div class="prog-fill" id="bt-prog" style="width:0%"></div>
+              </div>
+              <div class="data-status mt8" id="bt-data-status">Click FETCH DATA to load from Yahoo Finance</div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Strategy Selection</div>
+              <!-- Intraday strategies -->
+              <div id="strat-intraday">
+                <div class="strat-grid">
+                  <div class="strat-card sel" id="sc-ema" onclick="toggleStrat('ema')">
+                    <div class="strat-name">EMA Crossover</div>
+                    <div class="strat-desc">9/21/50 EMA + RSI + VWAP triple-confirm</div>
+                  </div>
+                  <div class="strat-card sel" id="sc-orb" onclick="toggleStrat('orb')">
+                    <div class="strat-name">ORB Breakout</div>
+                    <div class="strat-desc">Opening Range Breakout with volume filter</div>
+                  </div>
+                  <div class="strat-card sel" id="sc-smc" onclick="toggleStrat('smc')">
+                    <div class="strat-name">SMC FVG Bounce</div>
+                    <div class="strat-desc">Smart Money Concepts — Fair Value Gap</div>
+                  </div>
+                  <div class="strat-card" id="sc-bb" onclick="toggleStrat('bb')">
+                    <div class="strat-name">BB Squeeze</div>
+                    <div class="strat-desc">Bollinger Band squeeze breakout</div>
+                  </div>
+                  <div class="strat-card" id="sc-rsi" onclick="toggleStrat('rsi')">
+                    <div class="strat-name">RSI Reversal</div>
+                    <div class="strat-desc">RSI oversold/overbought mean reversion</div>
+                  </div>
+                </div>
+              </div>
+              <!-- F&O strategies -->
+              <div id="strat-fo" style="display:none">
+                <div class="strat-grid">
+                  <div class="strat-card sel" id="sc-straddle" onclick="toggleStrat('straddle')">
+                    <div class="strat-name">Short Straddle</div>
+                    <div class="strat-desc">Low IV + Neutral price — Sell ATM CE+PE</div>
+                  </div>
+                  <div class="strat-card sel" id="sc-bull_spread" onclick="toggleStrat('bull_spread')">
+                    <div class="strat-name">Bull Call Spread</div>
+                    <div class="strat-desc">Bullish signal — Buy ATM CE, Sell OTM CE</div>
+                  </div>
+                  <div class="strat-card sel" id="sc-bear_spread" onclick="toggleStrat('bear_spread')">
+                    <div class="strat-name">Bear Put Spread</div>
+                    <div class="strat-desc">Bearish signal — Buy ATM PE, Sell OTM PE</div>
+                  </div>
+                  <div class="strat-card" id="sc-iron_condor" onclick="toggleStrat('iron_condor')">
+                    <div class="strat-name">Iron Condor</div>
+                    <div class="strat-desc">Range-bound — Sell OTM strangle + hedges</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Parameter tuning -->
+          <div class="card mb12">
+            <div class="card-title">Strategy Parameters</div>
+            <div class="param-grid">
+              <div class="param-group">
+                <div class="pg-title">EMA Crossover</div>
+                <div class="filter-bar flex-wrap">
+                  <div class="fg"><label>Fast EMA</label><input type="number" id="ema-f" value="9" min="3" max="20" />
+                  </div>
+                  <div class="fg"><label>Slow EMA</label><input type="number" id="ema-s" value="21" min="10" max="50" />
+                  </div>
+                  <div class="fg"><label>SL (ATR ×)</label><input type="number" id="ema-sl" value="1.5" step="0.1"
+                      min="0.5" /></div>
+                  <div class="fg"><label>TP (ATR ×)</label><input type="number" id="ema-tp" value="3.0" step="0.1"
+                      min="1.0" /></div>
+                </div>
+              </div>
+              <div class="param-group">
+                <div class="pg-title">ORB / BB</div>
+                <div class="filter-bar flex-wrap">
+                  <div class="fg"><label>ORB Vol Filter</label><input type="number" id="orb-v" value="1.5" step="0.1"
+                      min="1" /></div>
+                  <div class="fg"><label>BB Period</label><input type="number" id="bb-p" value="20" min="10" max="50" />
+                  </div>
+                  <div class="fg"><label>BB Std Dev</label><input type="number" id="bb-std" value="2" step="0.1"
+                      min="1" /></div>
+                  <div class="fg"><label>BB Squeeze</label><input type="number" id="bb-sq" value="1.5" step="0.1"
+                      min="0.5" /></div>
+                </div>
+              </div>
+            </div>
+            <div class="bt-actions mt12">
+              <button class="btn btn-primary btn-lg" onclick="runBacktest()" id="bt-run-btn" disabled>RUN BACKTEST
+                ▶▶</button>
+              <button class="btn btn-ghost" onclick="btReset()">RESET</button>
+              <span class="bt-status-text" id="bt-status"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- BT RESULTS -->
+        <div id="bt-results" style="display:none">
+          <div id="bt-results-content">
+            <div class="empty-state">Run backtest first</div>
+          </div>
+        </div>
+
+        <!-- BT TRADES -->
+        <div id="bt-trades" style="display:none">
+          <div class="card">
+            <div class="card-title">Trade Log
+              <span class="filter-pills">
+                <span class="fpill active" onclick="filterTrades('all',this)">All</span>
+                <span class="fpill" onclick="filterTrades('win',this)">Wins</span>
+                <span class="fpill" onclick="filterTrades('loss',this)">Losses</span>
+                <span class="fpill" onclick="filterTrades('ema',this)">EMA</span>
+                <span class="fpill" onclick="filterTrades('orb',this)">ORB</span>
+                <span class="fpill" onclick="filterTrades('smc',this)">SMC</span>
+                <span class="fpill" onclick="filterTrades('straddle',this)">Straddle</span>
+                <span class="fpill" onclick="filterTrades('bull_spread',this)">Bull Spread</span>
+                <span class="fpill" onclick="filterTrades('bear_spread',this)">Bear Spread</span>
+              </span>
+            </div>
+            <div class="trade-summary" id="trade-summary"></div>
+            <div class="tbl-wrap">
+              <table class="dtbl">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Date/Time</th>
+                    <th>Segment</th>
+                    <th>Strategy</th>
+                    <th>Dir</th>
+                    <th>Entry</th>
+                    <th>Exit</th>
+                    <th>Qty/Lots</th>
+                    <th>Gross P&L</th>
+                    <th>Charges</th>
+                    <th>Net P&L</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="trade-body">
+                  <tr>
+                    <td colspan="12" class="empty-cell">Run backtest first</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- BT CHART -->
+        <div id="bt-chart" style="display:none">
+          <div class="card">
+            <div class="card-title">Candlestick Chart with Signals <span id="chart-strat-filter"
+                style="font-weight:400;font-size:12px;color:var(--clr-text-2)"></span></div>
+            <div id="tv-chart" style="height:520px"></div>
+          </div>
+        </div>
+
+        <!-- BT REPLAY -->
+        <div id="bt-replay" style="display:none">
+          <div class="card">
+            <div class="card-title">Bar-by-Bar Replay</div>
+            <div class="filter-bar mb12">
+              <div class="fg"><label>Select Date</label><input type="date" id="rp-date" /></div>
+              <div class="fg"><label>Speed (ms)</label><input type="number" id="rp-speed" value="400" min="100"
+                  max="2000" step="100" /></div>
+              <button class="btn btn-primary" onclick="initReplay()">LOAD DAY</button>
+              <button class="btn btn-ghost" onclick="rStep(-1)">◀ PREV</button>
+              <button class="btn btn-primary" id="rp-play" onclick="togglePlay()">▶ PLAY</button>
+              <button class="btn btn-ghost" onclick="rStep(1)">NEXT ▶</button>
+            </div>
+            <canvas id="rp-canvas"
+              style="width:100%;height:280px;display:block;background:var(--clr-chart-bg);border-radius:8px"></canvas>
+            <div class="rp-info mt8">
+              <div class="rpi"><span class="rpi-l">Time</span><span class="rpi-v" id="rp-t">--</span></div>
+              <div class="rpi"><span class="rpi-l">Open</span><span class="rpi-v" id="rp-o">--</span></div>
+              <div class="rpi"><span class="rpi-l">High</span><span class="rpi-v up" id="rp-h">--</span></div>
+              <div class="rpi"><span class="rpi-l">Low</span><span class="rpi-v down" id="rp-l">--</span></div>
+              <div class="rpi"><span class="rpi-l">Close</span><span class="rpi-v" id="rp-c">--</span></div>
+              <div class="rpi"><span class="rpi-l">RSI</span><span class="rpi-v" id="rp-rsi">--</span></div>
+              <div class="rpi"><span class="rpi-l">Signal</span><span class="rpi-v" id="rp-sig">--</span></div>
+              <div class="rpi"><span class="rpi-l">Day P&L</span><span class="rpi-v" id="rp-pnl">₹0</span></div>
+              <div class="rpi"><span class="rpi-l">Bar</span><span class="rpi-v" id="rp-idx">--</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- BT ACCURACY -->
+        <div id="bt-accuracy" style="display:none">
+          <div class="card mb12">
+            <div class="card-title">AI Backtest Review</div>
+            <div class="perf-summary">
+              <div class="ps-item"><span class="ps-l">Trades</span><span class="ps-v" id="ps-trades">--</span></div>
+              <div class="ps-item"><span class="ps-l">Win Rate</span><span class="ps-v" id="ps-wr">--%</span></div>
+              <div class="ps-item"><span class="ps-l">Net P&L</span><span class="ps-v" id="ps-pnl">--</span></div>
+              <div class="ps-item"><span class="ps-l">Sharpe</span><span class="ps-v" id="ps-sharpe">--</span></div>
+            </div>
+            <div class="filter-bar mt8">
+              <button class="btn btn-primary" id="ai-review-btn" onclick="getAIReview()" disabled>GET AI REVIEW</button>
+              <div class="fg"><input type="text" id="ai-qa-input" placeholder="Ask anything about this backtest..." />
+              </div>
+              <button class="btn btn-ghost" onclick="askAIQa()">ASK ▶</button>
+            </div>
+            <div class="ai-review-box mt8" id="ai-review-area">Run a backtest and click Get AI Review</div>
+          </div>
+          <div id="bt-acc-content">
+            <div class="empty-state">Run backtest to see accuracy breakdown</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: AI ANALYST ══════ -->
+      <section class="tab-pane" id="tab-analyst">
+        <div class="card chat-container">
+          <div class="card-title">AI Analyst — 20+ Years NSE/BSE Experience</div>
+          <div class="chat-starters">
+            <span class="qtag" onclick="askA('What is the current Nifty 50 trend today?')">Nifty trend?</span>
+            <span class="qtag" onclick="askA('Give me top F&O trades for today with entry/SL/target')">Top F&O
+              trades</span>
+            <span class="qtag" onclick="askA('Which sectors are showing strength today?')">Sector strength</span>
+            <span class="qtag" onclick="askA('Explain the current India VIX reading and its implications')">VIX
+              analysis</span>
+            <span class="qtag" onclick="askA('What are FII/DII flows telling us today?')">FII/DII flows</span>
+          </div>
+          <div class="chat-area" id="chat-area"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Ask the veteran analyst..."
+              onkeydown="if(event.key==='Enter')sendChat()" />
+            <button class="btn btn-primary" onclick="sendChat()">SEND</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: TRADE LOG ══════ -->
+      <section class="tab-pane" id="tab-tradelog">
+        <div class="card">
+          <div class="card-title">Live Trade Log (Signal Engine History)</div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Time</th>
+                  <th>Symbol</th>
+                  <th>Signal</th>
+                  <th>Entry</th>
+                  <th>SL</th>
+                  <th>Target 1</th>
+                  <th>Target 2</th>
+                  <th>R:R</th>
+                  <th>Confidence</th>
+                  <th>Basis</th>
+                </tr>
+              </thead>
+              <tbody id="live-trade-body">
+                <tr>
+                  <td colspan="11" class="empty-cell">Generate signals in Signal Engine tab</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: PAPER TRADING ══════ -->
+      <section class="tab-pane" id="tab-paper">
+
+        <!-- ORDER ENTRY PANEL -->
+        <div class="card mb12">
+          <div class="card-title">Place Order</div>
+          <div class="pt-order-grid">
+            <div class="fg" style="flex:2">
+              <label>Symbol</label>
+              <input type="text" id="pt-sym" list="sym-list" placeholder="NIFTY 50, BANKNIFTY 48000 CE..." oninput="debounceSearch(event, 'sym-list')" onchange="onPTSymSelect(this.value)" />
+            </div>
+            <div class="fg">
+              <label>Direction</label>
+              <div class="dir-toggle">
+                <button id="pt-long-btn" class="btn btn-long dir-btn active" onclick="ptSetDir('LONG')">▲ LONG</button>
+                <button id="pt-short-btn" class="btn btn-short dir-btn" onclick="ptSetDir('SHORT')">▼ SHORT</button>
+              </div>
+            </div>
+            <div class="fg">
+              <label>Order Type</label>
+              <select id="pt-order-type" onchange="ptOrderTypeChange()">
+                <option value="MARKET">Market</option>
+                <option value="LIMIT">Limit</option>
+                <option value="SL">Stop-Loss Limit</option>
+                <option value="SL-M">SL-Market</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Product</label>
+              <select id="pt-product">
+                <option value="MIS">Intraday (MIS)</option>
+                <option value="CNC">Delivery (CNC)</option>
+                <option value="NRML">F&amp;O Normal</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Quantity</label>
+              <input type="number" id="pt-qty" value="1" min="1" />
+            </div>
+            <div class="fg" id="pt-price-row">
+              <label>Price (₹) <span id="pt-ltp-label" style="font-size:10px;color:var(--clr-text-3)"></span></label>
+              <input type="number" id="pt-price" step="0.05" placeholder="Market price" />
+            </div>
+            <div class="fg" id="pt-trigger-row" style="display:none">
+              <label>Trigger Price (₹)</label>
+              <input type="number" id="pt-trigger" step="0.05" placeholder="0.00" />
+            </div>
+            <div class="fg">
+              <label>Stop Loss (₹)</label>
+              <input type="number" id="pt-sl-input" step="0.05" placeholder="0.00" />
+            </div>
+            <div class="fg">
+              <label>Target (₹)</label>
+              <input type="number" id="pt-target-input" step="0.05" placeholder="0.00" />
+            </div>
+          </div>
+          <div class="pt-order-actions">
+            <button class="btn btn-green" onclick="ptPlaceOrder()" id="pt-place-btn">⚡ Place Order</button>
+            <button class="btn btn-ghost" onclick="ptFetchLTP()">↺ Get LTP</button>
+            <button class="btn btn-ghost" onclick="ptAutoFillSignal()">📊 Use Current Signal</button>
+            <span class="pt-order-status" id="pt-order-status"></span>
+          </div>
+        </div>
+
+        <!-- PORTFOLIO SUMMARY -->
+        <div class="g4 mb12">
+          <div class="stat-card">
+            <div class="sc-l">Capital</div>
+            <div class="sc-v" id="pt-capital">--</div>
+            <div class="sc-s">Virtual ₹</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Used Margin</div>
+            <div class="sc-v" id="pt-margin">--</div>
+            <div class="sc-s">Deployed</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Unrealized P&L</div>
+            <div class="sc-v" id="pt-unrealized">₹0</div>
+            <div class="sc-s">Open positions</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Realized P&L</div>
+            <div class="sc-v" id="pt-realized">₹0</div>
+            <div class="sc-s">Closed trades</div>
+          </div>
+        </div>
+
+        <!-- DAY STATS -->
+        <div class="g4 mb12">
+          <div class="stat-card">
+            <div class="sc-l">Day P&L (Gross)</div>
+            <div class="sc-v" id="pt-day-pnl">₹0</div>
+            <div class="sc-s">Today only</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Net Day P&L</div>
+            <div class="sc-v" id="pt-net-day-pnl">₹0</div>
+            <div class="sc-s">After charges</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Trades Today</div>
+            <div class="sc-v" id="pt-day-trades">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="sc-l">Win Rate</div>
+            <div class="sc-v" id="pt-win-rate">--%</div>
+          </div>
+        </div>
+        <div class="card mb12">
+          <div class="pt-section-header">
+            <span class="card-title" style="margin:0">Active Positions</span>
+            <div class="pt-actions">
+              <button class="btn btn-ghost btn-sm" onclick="refreshPaperTrading()">↺ Refresh</button>
+              <button class="btn btn-danger btn-sm" onclick="resetPaperTrading()">Reset Portfolio</button>
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>LTP</th>
+                  <th>SL</th>
+                  <th>Target</th>
+                  <th>Unreal P&L</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="pt-positions-body">
+                <tr>
+                  <td colspan="9" class="empty-cell">No active positions.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Trade History</div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th>Exit Time</th>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>P&L</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="pt-history-body">
+                <tr>
+                  <td colspan="8" class="empty-cell">No trade history yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+</body>
+
+</html>
