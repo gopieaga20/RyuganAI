@@ -1,5 +1,11 @@
 -- Ryugan AI — Paper Trading Database Schema (PostgreSQL)
--- Run this once to set up your database:
+--
+-- NOTE: backend/main.py's _ensure_schema() creates and migrates this exact
+-- schema automatically on every server startup (CREATE TABLE IF NOT EXISTS +
+-- ALTER TABLE ... ADD COLUMN IF NOT EXISTS). You do NOT need to run this file
+-- for normal use — it's kept only for manual/offline database setup, e.g.
+-- provisioning a DB before the backend has ever run.
+--
 --   psql -U postgres -d trading_app -f init_db.sql
 
 CREATE TABLE IF NOT EXISTS portfolio (
@@ -17,6 +23,8 @@ CREATE TABLE IF NOT EXISTS positions (
     entry_price NUMERIC(12, 2) NOT NULL,
     sl          NUMERIC(12, 2) NOT NULL,
     tp          NUMERIC(12, 2) NOT NULL,
+    order_type  TEXT        NOT NULL DEFAULT 'MARKET',
+    product     TEXT        NOT NULL DEFAULT 'MIS',
     entry_time  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -28,8 +36,18 @@ CREATE TABLE IF NOT EXISTS history (
     entry_price NUMERIC(12, 2) NOT NULL,
     exit_price  NUMERIC(12, 2) NOT NULL,
     pnl         NUMERIC(12, 2) NOT NULL,
+    charges     NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     reason      TEXT,
     exit_time   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id          SERIAL PRIMARY KEY,
+    symbol      TEXT        NOT NULL,
+    timeframe   TEXT        NOT NULL,
+    params      JSONB       NOT NULL DEFAULT '{}',
+    stats       JSONB       NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Seed the default portfolio (only if empty)

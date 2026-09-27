@@ -17,6 +17,8 @@ _auth_token = None         # JWT session token
 _feed_token = None         # WebSocket feed token
 _master_lookup = {}        # symbol -> {exch, token}
 _is_loaded = False
+_nse_equities = []         # [{symbol, name}, ...] — all NSE cash-market equities
+_options_index = {}        # underlying name -> [{symbol, token, expiry, strike, type}, ...]
 
 # ── Session management ────────────────────────────────────────────────────────
 
@@ -65,17 +67,21 @@ def invalidate_session():
 # ── Scrip master ──────────────────────────────────────────────────────────────
 
 def load_master_contract():
-    """Download Angel One's scrip master JSON and build an in-memory lookup table."""
-    global _is_loaded, _master_lookup
+    """Download Angel One's scrip master JSON and build in-memory lookup tables.
+    This is a plain public file download — it needs no login/API key, so it works
+    even when the Angel trading session itself is unavailable."""
+    global _is_loaded, _master_lookup, _nse_equities, _options_index
     if _is_loaded:
         return
     try:
-        print("Downloading Angel OpenAPIScripMaster.json…")
+        print("Downloading Angel OpenAPIScripMaster.json...")
         url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
+        equities = []
+        options = {}
         # Build lookup keyed by symbol string (uppercase), only NSE/NFO
         for item in data:
             exch = item.get("exch_seg", "")
@@ -86,10 +92,46 @@ def load_master_contract():
                     "token": str(item.get("token", "")),
                     "name": item.get("name", sym),
                 }
+                if exch == "NSE" and sym.endswith("-EQ"):
+                    equities.append({"symbol": sym[:-3], "name": item.get("name", sym[:-3])})
+
+                instrument = item.get("instrumenttype", "")
+                if exch == "NFO" and instrument in ("OPTIDX", "OPTSTK"):
+                    opt_type = "CE" if sym.endswith("CE") else "PE" if sym.endswith("PE") else None
+                    try:
+                        strike = float(item.get("strike", "-1")) / 100.0
+                    except (TypeError, ValueError):
+                        strike = None
+                    if opt_type and strike and strike > 0:
+                        name = item.get("name", "")
+                        options.setdefault(name, []).append({
+                            "symbol": sym,
+                            "token": str(item.get("token", "")),
+                            "expiry": item.get("expiry", ""),
+                            "strike": strike,
+                            "type": opt_type,
+                        })
+
+        equities.sort(key=lambda e: e["symbol"])
+        _nse_equities = equities
+        _options_index = options
         _is_loaded = True
-        print(f"Angel Scrip Master loaded: {len(_master_lookup)} symbols.")
+        print(f"Angel Scrip Master loaded: {len(_master_lookup)} symbols, {len(_nse_equities)} NSE equities, {len(_options_index)} F&O underlyings.")
     except Exception as e:
         print(f"Failed to load Angel Scrip Master: {e}")
+
+
+def get_nse_equities():
+    """Return the full list of NSE cash-market equities: [{symbol, name}, ...]."""
+    load_master_contract()
+    return _nse_equities
+
+
+def get_option_contracts(underlying: str):
+    """Return all option contracts for an F&O underlying (e.g. 'NIFTY', 'RELIANCE'):
+    [{symbol, token, expiry, strike, type}, ...], or [] if the underlying has no F&O."""
+    load_master_contract()
+    return _options_index.get(underlying.strip().upper(), [])
 
 # ── Symbol mapping ────────────────────────────────────────────────────────────
 

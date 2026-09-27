@@ -11,58 +11,12 @@
    MODULE: CONFIG
 ═══════════════════════════════════════════ */
 const CONFIG = Object.freeze({
-  API_URL: 'https://api.anthropic.com/v1/messages',
-  MODEL: 'claude-3-5-sonnet-20241022',
-  MAX_TOKENS: 1200,
   PROXY_BASE: (() => window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '')(),
   ANALYST_PERSONA: `You are a veteran Indian stock market analyst with 20+ years on NSE/BSE.
 Expert in Nifty 50, Bank Nifty, intraday trading, F&O, RSI/MACD/BB/VWAP/EMA, PCR, Max Pain,
 sectoral rotation, FII/DII flows, RBI policy, USD/INR, crude oil effects on Indian markets.
 Speak like a seasoned trader — direct, confident, specific levels. Search current data before answering.`
 });
-
-/* ═══════════════════════════════════════════
-   MODULE: SECURITY — API KEY MANAGEMENT
-   Stored in sessionStorage so it persists across
-   refreshes but clears automatically when browser
-   tab/window is closed. Never put in localStorage.
-═══════════════════════════════════════════ */
-const _SK_KEY = 'ryugan_ak';
-const ApiKeyStore = {
-  set(key) {
-    if (typeof key !== 'string' || !key.startsWith('sk-ant-')) return false;
-    sessionStorage.setItem(_SK_KEY, key.trim());
-    return true;
-  },
-  get() { return sessionStorage.getItem(_SK_KEY); },
-  clear() { sessionStorage.removeItem(_SK_KEY); },
-  has() {
-    const k = sessionStorage.getItem(_SK_KEY);
-    return k !== null && k.length > 10;
-  }
-};
-
-function saveApiKey() {
-  const input = document.getElementById('api-key-input');
-  const val = (input?.value || '').trim();
-  const status = document.getElementById('api-key-status');
-
-  if (!val) {
-    ApiKeyStore.clear();
-    status.textContent = 'Key cleared.';
-    status.style.color = 'var(--text3)';
-    return;
-  }
-  if (!val.startsWith('sk-ant-')) {
-    status.textContent = '✗ Invalid key format';
-    status.style.color = 'var(--down)';
-    return;
-  }
-  ApiKeyStore.set(val);
-  input.value = '';
-  status.textContent = '✓ Key saved (session only)';
-  status.style.color = 'var(--green)';
-}
 
 /* ═══════════════════════════════════════════
    MODULE: SECURE DOM HELPERS
@@ -193,47 +147,28 @@ function switchBTTab(t) {
    Never exposes key in DOM/localStorage.
 ═══════════════════════════════════════════ */
 async function callClaude(userPrompt, systemPrompt, useSearch = true) {
-  if (!ApiKeyStore.has()) {
-    return algoFallback(userPrompt);
-  }
-
-  const body = {
-    model: CONFIG.MODEL,
-    max_tokens: CONFIG.MAX_TOKENS,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userPrompt }]
-  };
-
   try {
-    const res = await fetch(CONFIG.API_URL, {
+    const res = await fetch(CONFIG.PROXY_BASE + '/api/ai/chat', {
       method: 'POST',
-      cache: 'no-store', // Added cache: 'no-store'
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ApiKeyStore.get(),
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify(body)
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      })
     });
 
-    if (res.status === 401 || res.status === 403) {
-      ApiKeyStore.clear();
-      DOM.setText('api-key-status', '✗ Key rejected (401/403)');
-      DOM.setColor('api-key-status', 'var(--down)');
-      window.alert('The Anthropic API key you provided was rejected by Anthropic (Error 401/403). It is either invalid, revoked, or your account has no credits. Falling back to mathematical signals.');
+    if (!res.ok) {
+      // 503 = AI not configured on the server; anything else = transient failure.
+      // Either way, degrade gracefully to the deterministic algo signals.
       return algoFallback(userPrompt);
     }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
-    return (data.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('\n');
+    return data.text || '';
 
   } catch (err) {
-    console.error('Claude API error:', err);
+    console.error('AI proxy error:', err);
     return algoFallback(userPrompt);
   }
 }
@@ -1313,26 +1248,24 @@ async function fetchGlobalCues() {
     return d;
   } catch (e) {
     console.error('fetchGlobalCues error:', e);
-    // Fallback: try Claude if API key is set
-    if (ApiKeyStore.has()) {
-      try {
-        const prompt = `Search for current global market data: SGX/GIFT Nifty level, Dow Jones, WTI crude oil, USD/INR, Gold MCX, DXY.
+    // Fallback: ask the AI proxy (degrades to algo fallback server-side if no key configured)
+    try {
+      const prompt = `Search for current global market data: SGX/GIFT Nifty level, Dow Jones, WTI crude oil, USD/INR, Gold MCX, DXY.
 Respond ONLY in JSON: {"sgx":"level","dow":"level change","crude":"price change","usdinr":"rate","gold":"price","dxy":"level change","bias":"positive/negative/neutral"}`;
-        const raw = await callClaude(prompt, CONFIG.ANALYST_PERSONA);
-        const d = extractJson(raw);
-        if (!d) return null;
-        const isUp = v => v && (String(v).includes('+') || String(v).toLowerCase().includes('up'));
-        ['gc-sgx','gc-dow'].forEach(id => {
-          const el = document.getElementById(id);
-          if (el) { el.textContent = (id === 'gc-sgx' ? d.sgx : d.dow) || '--'; el.style.color = isUp(el.textContent) ? 'var(--green)' : 'var(--down)'; }
-        });
-        DOM.setText('gc-crude', d.crude || '--');
-        DOM.setText('gc-gold',  d.gold  || '--');
-        DOM.setText('gc-usd',   d.usdinr|| '--');
-        DOM.setText('gc-dxy',   d.dxy   || '--');
-        return d;
-      } catch (_) {}
-    }
+      const raw = await callClaude(prompt, CONFIG.ANALYST_PERSONA);
+      const d = extractJson(raw);
+      if (!d) return null;
+      const isUp = v => v && (String(v).includes('+') || String(v).toLowerCase().includes('up'));
+      ['gc-sgx','gc-dow'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.textContent = (id === 'gc-sgx' ? d.sgx : d.dow) || '--'; el.style.color = isUp(el.textContent) ? 'var(--green)' : 'var(--down)'; }
+      });
+      DOM.setText('gc-crude', d.crude || '--');
+      DOM.setText('gc-gold',  d.gold  || '--');
+      DOM.setText('gc-usd',   d.usdinr|| '--');
+      DOM.setText('gc-dxy',   d.dxy   || '--');
+      return d;
+    } catch (_) {}
     return null;
   }
 }
@@ -1377,51 +1310,30 @@ async function sendChat() {
   const thinking = addMsg('ai', '<span class="spinr"></span> Fetching live market data...');
 
   try {
-    if (!ApiKeyStore.has()) {
-      thinking.querySelector('.msg-bubble').textContent =
-        'Please add your Anthropic API key in the sidebar Settings panel to enable the AI Analyst chat.';
-      return;
-    }
-
-    const body = {
-      model: CONFIG.MODEL,
-      max_tokens: CONFIG.MAX_TOKENS,
-      system: CONFIG.ANALYST_PERSONA,
-      messages: State.chatHistory
-    };
-
-    const res = await fetch(CONFIG.API_URL, {
+    const res = await fetch(CONFIG.PROXY_BASE + '/api/ai/chat', {
       method: 'POST',
       cache: 'no-store',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ApiKeyStore.get(),
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify(body)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system: CONFIG.ANALYST_PERSONA,
+        messages: State.chatHistory
+      })
     });
 
-    if (res.status === 401 || res.status === 403) {
-      ApiKeyStore.clear();
-      DOM.setText('api-key-status', '✗ Key rejected (401/403)');
-      DOM.setColor('api-key-status', 'var(--down)');
+    if (res.status === 503) {
       thinking.querySelector('.msg-bubble').textContent =
-        'Your Anthropic API key was rejected (Error ' + res.status + '). Please re-enter a valid key.';
+        'AI Analyst is not configured on the server. Set ANTHROPIC_API_KEY in backend/.env to enable it.';
       return;
     }
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
+      const errBody = await res.json().catch(() => ({}));
       thinking.querySelector('.msg-bubble').textContent =
-        'Anthropic API error ' + res.status + (errText ? ': ' + errText.slice(0, 120) : '') + '.';
+        'AI request failed (' + res.status + ')' + (errBody.detail ? ': ' + String(errBody.detail).slice(0, 120) : '') + '.';
       return;
     }
 
     const data = await res.json();
-    const reply = (data.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('\n') || 'No text response returned. The model may need a different prompt.';
+    const reply = data.text || 'No text response returned. The model may need a different prompt.';
 
     // Safe render: textContent for user content, but format markdown-style bold safely
     const bubble = thinking.querySelector('.msg-bubble');
@@ -2768,12 +2680,6 @@ async function _fetchDayStats() {
    INIT
 ═══════════════════════════════════════════ */
 window.addEventListener('load', async () => {
-  // Restore API key indicator if key already in sessionStorage
-  if (ApiKeyStore.has()) {
-    const st = document.getElementById('api-key-status');
-    if (st) { st.textContent = '\u2713 Key active (session)'; st.style.color = 'var(--clr-green)'; }
-  }
-
   // Initialize watchlist
   WL.init();
 

@@ -13,7 +13,7 @@
     rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-  <script defer src="script.js?v=18"></script>
+  <script type="module" src="js/app.js"></script>
 </head>
 
 <body>
@@ -22,6 +22,18 @@
     <div class="ov-inner">
       <div class="ov-spin"></div>
       <p id="ovMsg">LOADING...</p>
+    </div>
+  </div>
+
+  <!-- STOCK / F&O UNDERLYING BROWSER (shared modal, see js/stock-browser.js) -->
+  <div class="sb-modal-backdrop" id="sb-modal-backdrop" style="display:none">
+    <div class="sb-modal">
+      <div class="sb-modal-header">
+        <span id="sb-modal-title">Browse</span>
+        <button class="btn btn-ghost btn-sm" onclick="closeStockBrowser()">✕</button>
+      </div>
+      <input type="text" id="sb-modal-search" class="sb-modal-search" placeholder="Type to filter…" autocomplete="off" />
+      <div id="sb-modal-list" class="sb-modal-list"></div>
     </div>
   </div>
 
@@ -98,15 +110,6 @@
         </div>
       </div>
 
-      <!-- API Key -->
-      <div class="sb-apikey">
-        <div class="sba-label">Anthropic API Key</div>
-        <div class="sba-row">
-          <input type="password" id="api-key-input" placeholder="sk-ant-..." class="sba-input" />
-          <button class="sba-btn" onclick="saveApiKey()">Save</button>
-        </div>
-        <div class="sba-status" id="api-key-status"></div>
-      </div>
     </aside>
 
     <!-- ═══════════ MAIN ═══════════ -->
@@ -276,6 +279,7 @@
           <span class="qtag" onclick="qs('ICICI BANK')">ICICI Bank</span>
           <span class="qtag" onclick="qs('ADANI ENT')">Adani Ent</span>
           <span class="qtag" onclick="qs('TATA MOTORS')">Tata Motors</span>
+          <span class="qtag" onclick="openStockBrowser('stocks', qs)" style="font-weight:700">🔍 Browse All Stocks</span>
         </div>
         <div id="sig-output"></div>
         <div class="g2 mt12">
@@ -351,7 +355,15 @@
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
             </select></div>
-          <button class="btn btn-primary" onclick="analyzeFO()">ANALYZE F&amp;O ▶</button>
+          <button class="btn btn-ghost" onclick="openStockBrowser('fo', v => { document.getElementById('fo-sym').value = v; })" title="Browse all F&amp;O underlyings">🔍 Browse F&amp;O</button>
+          <button class="btn btn-primary" onclick="analyzeFO(); loadOptionChain();">ANALYZE F&amp;O ▶</button>
+        </div>
+        <div class="card mb12">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>Live Option Chain <span id="oc-spot-badge" style="font-weight:400;color:var(--clr-text-3);font-size:11px;"></span></span>
+            <select id="oc-expiry-select" onchange="loadOptionChain(null, this.value)" style="display:none;max-width:160px;"></select>
+          </div>
+          <div id="oc-area"><div class="empty-state">Click "Analyze F&amp;O" to load the live option chain (real OI/LTP via Angel One).</div></div>
         </div>
         <div class="g3 mb12">
           <div class="card">
@@ -658,8 +670,15 @@
 
         <!-- BT RESULTS -->
         <div id="bt-results" style="display:none">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+            <button class="btn btn-sm btn-primary" onclick="saveBacktestResult()" id="bt-save-btn" disabled>💾 Save Result</button>
+          </div>
           <div id="bt-results-content">
             <div class="empty-state">Run backtest first</div>
+          </div>
+          <div class="card" style="margin-top:16px;">
+            <div class="card-header">Saved Backtest Runs</div>
+            <div id="bt-saved-runs"><div class="empty-state">No saved runs yet.</div></div>
           </div>
         </div>
 
@@ -832,7 +851,10 @@
           <div class="pt-order-grid">
             <div class="fg" style="flex:2">
               <label>Symbol</label>
-              <input type="text" id="pt-sym" list="sym-list" placeholder="NIFTY 50, BANKNIFTY 48000 CE..." oninput="debounceSearch(event, 'sym-list')" onchange="onPTSymSelect(this.value)" />
+              <div style="display:flex;gap:6px;">
+                <input type="text" id="pt-sym" list="sym-list" placeholder="NIFTY 50, BANKNIFTY 48000 CE..." oninput="debounceSearch(event, 'sym-list')" onchange="onPTSymSelect(this.value)" style="flex:1" />
+                <button type="button" class="btn btn-ghost btn-sm" onclick="openStockBrowser('stocks', v => { document.getElementById('pt-sym').value = v; onPTSymSelect(v); })" title="Browse all stocks">🔍</button>
+              </div>
             </div>
             <div class="fg">
               <label>Direction</label>

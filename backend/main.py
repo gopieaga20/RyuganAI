@@ -3,7 +3,7 @@ Ryugan AI — Trading Backend
 FastAPI + asyncpg (PostgreSQL) backend for Paper Trading and Yahoo Finance proxy.
 """
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,16 +14,32 @@ import httpx
 import os
 import datetime
 import time
+import json
 import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 from dotenv import load_dotenv
 
 try:
-    from angel_broker import get_quote as get_angel_quote, get_historical as get_angel_historical # type: ignore
+    from angel_broker import ( # type: ignore
+        get_quote as get_angel_quote,
+        get_historical as get_angel_historical,
+        get_nse_equities,
+        get_option_contracts,
+        get_angel_client,
+        load_master_contract,
+    )
+    import angel_broker as _angel_broker # type: ignore
 except ImportError:
     def get_angel_quote(sym): return None
     def get_angel_historical(sym, interval="15m", days=90): return None
+    def get_nse_equities(): return []
+    def get_option_contracts(underlying): return []
+    def get_angel_client(): return None
+    def load_master_contract(): pass
+    _angel_broker = None
+
+from nse_client import get_fo_underlyings
 
 load_dotenv()
 
@@ -32,25 +48,170 @@ DATABASE_URL = os.getenv(
     "postgresql://postgres:202020@localhost:5432/trading_app"
 )
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022").strip()
+
 # ─────────────────────────────────────────────
 # APP LIFESPAN — connection pool init/teardown
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create the asyncpg pool on startup, teardown on shutdown."""
+    watcher_task = None
     try:
         pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
         app.state.pool = pool
         await _ensure_schema(pool)
-        print("✅ PostgreSQL connected and schema verified.")
+        print("[OK] PostgreSQL connected and schema verified.")
+        watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
     except Exception as e:
-        print(f"⚠️  Database connection failed: {e}")
-        print("     Starting without DB — paper trading endpoints will return 503.")
+        print(f"[WARN] Database connection failed: {e}")
+        print("       Starting without DB - paper trading endpoints will return 503.")
         app.state.pool = None
     yield
+    if watcher_task:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
     if app.state.pool:
         await app.state.pool.close()
         print("PostgreSQL pool closed.")
+
+
+def compute_margin(qty: int, price: float) -> float:
+    """Margin required to open a position of `qty` at `price`."""
+    return round(float(qty) * float(price), 2)
+
+
+def compute_pnl(pos_type: str, entry_price: float, exit_price: float, qty: int) -> float:
+    """Realized PnL for closing a LONG/SHORT position."""
+    if pos_type == "LONG":
+        return round((float(exit_price) - float(entry_price)) * int(qty), 2)
+    return round((float(entry_price) - float(exit_price)) * int(qty), 2)
+
+
+def sl_tp_breached(pos_type: str, ltp: float, sl: float, tp: float) -> Optional[str]:
+    """Return 'SL Hit' / 'Target Hit' if ltp breaches the position's stop-loss/target, else None."""
+    if pos_type == "LONG":
+        if ltp <= sl:
+            return "SL Hit"
+        if ltp >= tp:
+            return "Target Hit"
+    else:
+        if ltp >= sl:
+            return "SL Hit"
+        if ltp <= tp:
+            return "Target Hit"
+    return None
+
+
+async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: float, reason: str) -> Optional[float]:
+    """Close an open position at exit_price: release margin, book PnL, record history.
+    Returns the realized PnL, or None if the position no longer exists (already closed)."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            pos = await conn.fetchrow(
+                "SELECT * FROM positions WHERE id = $1 FOR UPDATE", position_id
+            )
+            if not pos:
+                return None
+
+            margin_release = compute_margin(int(pos["qty"]), float(pos["entry_price"]))
+            pnl = compute_pnl(pos["type"], float(pos["entry_price"]), exit_price, int(pos["qty"]))
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            await conn.execute("DELETE FROM positions WHERE id = $1", position_id)
+            await conn.execute(
+                """UPDATE portfolio
+                   SET used_margin = used_margin - $1,
+                       capital     = capital + $2,
+                       total_pnl   = total_pnl + $3
+                   WHERE id = 1""",
+                margin_release, pnl, pnl
+            )
+            # Simulate brokerage: ₹20 flat per leg (entry already charged), here exit
+            charges = 20.0
+            await conn.execute(
+                """INSERT INTO history
+                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                pos["symbol"], pos["type"], pos["qty"],
+                pos["entry_price"], exit_price, pnl, charges, reason, now
+            )
+    return pnl
+
+
+# ─────────────────────────────────────────────
+# LIVE PRICE LOOKUP — shared by the SL/TP watcher
+# ─────────────────────────────────────────────
+_SYMBOL_ALIASES = {
+    "NIFTY 50": "^NSEI",
+    "BANK NIFTY": "^NSEBANK",
+    "SENSEX": "^BSESN",
+}
+
+
+def _to_price_symbol(symbol: str) -> str:
+    """Map a position's stored symbol to a Yahoo/Angel-lookup-friendly symbol."""
+    if symbol in _SYMBOL_ALIASES:
+        return _SYMBOL_ALIASES[symbol]
+    if "^" in symbol or symbol.endswith(".NS"):
+        return symbol
+    return symbol + ".NS"
+
+
+async def _fetch_ltp(symbol: str) -> Optional[float]:
+    """Fetch last traded price for a position symbol: Angel One first, Yahoo Finance fallback."""
+    price_sym = _to_price_symbol(symbol)
+
+    angel_data = get_angel_quote(price_sym)
+    if angel_data:
+        try:
+            return float(angel_data["chart"]["result"][0]["meta"]["regularMarketPrice"])
+        except Exception:
+            pass
+
+    try:
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{price_sym}?interval=1m&range=1d&includePrePost=false"
+        )
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code != 200:
+                return None
+            j = r.json()
+            price = j["chart"]["result"][0]["meta"].get("regularMarketPrice")
+            return float(price) if price is not None else None
+    except Exception:
+        return None
+
+
+_SL_TP_POLL_SECONDS = 20
+
+
+async def _sl_tp_watcher(pool: asyncpg.Pool):
+    """Background loop: auto square-off any open position whose SL/TP has been breached,
+    independent of whether a browser tab is open."""
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                positions = await conn.fetch("SELECT * FROM positions")
+            for pos in positions:
+                ltp = await _fetch_ltp(pos["symbol"])
+                if ltp is None:
+                    continue
+                reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
+                if reason:
+                    await _close_position(pool, pos["id"], ltp, reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[WARN] SL/TP watcher error: {e}")
+        await asyncio.sleep(_SL_TP_POLL_SECONDS)
 
 
 async def _ensure_schema(pool: asyncpg.Pool):
@@ -92,6 +253,16 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 exit_time   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                id          SERIAL PRIMARY KEY,
+                symbol      TEXT NOT NULL,
+                timeframe   TEXT NOT NULL,
+                params      JSONB NOT NULL DEFAULT '{}',
+                stats       JSONB NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
         # Safe migration: add new columns if they don't exist on old tables
         for stmt in [
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
@@ -111,9 +282,14 @@ async def _ensure_schema(pool: asyncpg.Pool):
 # ─────────────────────────────────────────────
 app = FastAPI(title="Ryugan AI Backend", version="2.0.0", lifespan=lifespan)
 
+_allowed_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,6 +326,20 @@ class ModifyPositionRequest(BaseModel):
     sl: Optional[float] = Field(default=None, gt=0)
     tp: Optional[float] = Field(default=None, gt=0)
 
+class AiChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=8000)
+
+class AiChatRequest(BaseModel):
+    system: str = Field(..., min_length=1, max_length=4000)
+    messages: list[AiChatMessage] = Field(..., min_length=1, max_length=40)
+
+class BacktestSaveRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=50)
+    timeframe: str = Field(..., min_length=1, max_length=20)
+    params: dict[str, Any] = Field(default_factory=dict)
+    stats: dict[str, Any] = Field(...)
+
 # ─────────────────────────────────────────────
 # PAPER TRADING ROUTES
 # ─────────────────────────────────────────────
@@ -178,7 +368,7 @@ async def get_history(request: Request):
 @app.post("/api/paper/trade")
 async def execute_trade(req: TradeRequest, request: Request):
     pool = _get_pool(request)
-    margin_req = round(float(req.qty * req.entry_price), 2)
+    margin_req = compute_margin(req.qty, req.entry_price)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -208,42 +398,9 @@ async def execute_trade(req: TradeRequest, request: Request):
 @app.post("/api/paper/exit")
 async def exit_trade(req: ExitRequest, request: Request):
     pool = _get_pool(request)
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            pos = await conn.fetchrow(
-                "SELECT * FROM positions WHERE id = $1 FOR UPDATE", req.id
-            )
-            if not pos:
-                raise HTTPException(status_code=404, detail="Position not found")
-
-            margin_release = round(float(float(pos["qty"]) * float(pos["entry_price"])), 2)
-
-            if pos["type"] == "LONG":
-                pnl = round(float((req.exit_price - float(pos["entry_price"])) * int(pos["qty"])), 2)
-            else:
-                pnl = round(float((float(pos["entry_price"]) - req.exit_price) * int(pos["qty"])), 2)
-
-            now = datetime.datetime.now(datetime.timezone.utc)
-            await conn.execute("DELETE FROM positions WHERE id = $1", req.id)
-            await conn.execute(
-                """UPDATE portfolio
-                   SET used_margin = used_margin - $1,
-                       capital     = capital + $2,
-                       total_pnl   = total_pnl + $3
-                   WHERE id = 1""",
-                margin_release, pnl, pnl
-            )
-            # Simulate brokerage: ₹20 flat per leg (entry already charged), here exit
-            charges = 20.0
-            await conn.execute(
-                """INSERT INTO history
-                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-                pos["symbol"], pos["type"], pos["qty"],
-                pos["entry_price"], req.exit_price, pnl, charges, req.reason, now
-            )
-
+    pnl = await _close_position(pool, req.id, req.exit_price, req.reason)
+    if pnl is None:
+        raise HTTPException(status_code=404, detail="Position not found")
     return {"status": "success", "pnl": pnl}
 
 
@@ -299,6 +456,250 @@ async def get_paper_stats(request: Request):
         "net_day_pnl": round(float(day_pnl - day_charges), 2),
         "win_rate": win_rate,
         "total_pnl": float(port["total_pnl"]) if port else 0,
+    }
+
+
+# ─────────────────────────────────────────────
+# BACKTEST RESULTS — save/list past backtest runs
+# ─────────────────────────────────────────────
+@app.post("/api/backtest/save")
+async def save_backtest(req: BacktestSaveRequest, request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO backtest_runs (symbol, timeframe, params, stats)
+               VALUES ($1, $2, $3::jsonb, $4::jsonb)
+               RETURNING id, created_at""",
+            req.symbol.upper(), req.timeframe, json.dumps(req.params), json.dumps(req.stats)
+        )
+    return {"status": "success", "id": row["id"], "created_at": row["created_at"]}
+
+
+@app.get("/api/backtest/history")
+async def get_backtest_history(request: Request, limit: int = 20):
+    pool = _get_pool(request)
+    limit = max(1, min(50, limit))
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, symbol, timeframe, params, stats, created_at
+               FROM backtest_runs ORDER BY created_at DESC LIMIT $1""",
+            limit
+        )
+    runs = []
+    for r in rows:
+        d = dict(r)
+        d["params"] = json.loads(d["params"]) if isinstance(d["params"], str) else d["params"]
+        d["stats"] = json.loads(d["stats"]) if isinstance(d["stats"], str) else d["stats"]
+        runs.append(d)
+    return {"runs": runs}
+
+
+# ─────────────────────────────────────────────
+# AI ANALYST — Claude Messages API proxy
+# Key stays server-side; never sent to the browser.
+# ─────────────────────────────────────────────
+
+@app.post("/api/ai/chat")
+async def ai_chat(req: AiChatRequest):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="AI not configured on server (set ANTHROPIC_API_KEY in backend/.env)."
+        )
+
+    body = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 1200,
+        "system": req.system,
+        "messages": [m.model_dump() for m in req.messages],
+    }
+    headers = {
+        "content-type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Anthropic API request timed out")
+        except httpx.ConnectError as e:
+            raise HTTPException(status_code=502, detail=f"Cannot reach Anthropic API: {e}")
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=f"Anthropic API error: {r.text[:300]}")
+
+    data = r.json()
+    text = "\n".join(
+        b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+    )
+    return {"text": text}
+
+
+# ─────────────────────────────────────────────
+# WEBSOCKET — live price streaming
+# Client sends {"symbols": [...]} once after connecting, then receives
+# {"prices": {symbol: ltp, ...}, "ts": epoch_seconds} every few seconds.
+# ─────────────────────────────────────────────
+_WS_PUSH_SECONDS = 5
+_WS_MAX_SYMBOLS = 30
+
+@app.websocket("/ws/prices")
+async def ws_prices(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        init = await websocket.receive_json()
+        symbols = init.get("symbols") if isinstance(init, dict) else None
+        if not isinstance(symbols, list) or not symbols:
+            await websocket.close(code=1008)
+            return
+        symbols = [str(s)[:50] for s in symbols][:_WS_MAX_SYMBOLS]
+
+        while True:
+            prices = {}
+            for sym in symbols:
+                ltp = await _fetch_ltp(sym)
+                if ltp is not None:
+                    prices[sym] = ltp
+            await websocket.send_json({"prices": prices, "ts": time.time()})
+            await asyncio.sleep(_WS_PUSH_SECONDS)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[WARN] ws_prices error: {e}")
+
+
+# ─────────────────────────────────────────────
+# SYMBOL UNIVERSE — full NSE stock list + F&O underlyings
+# ─────────────────────────────────────────────
+
+@app.get("/api/stocks")
+async def list_stocks():
+    """Full NSE cash-market equity list (~2700 symbols), from Angel's public
+    scrip master — no broker session/API key required for this endpoint."""
+    equities = get_nse_equities()
+    if not equities:
+        raise HTTPException(status_code=503, detail="Stock list unavailable (scrip master failed to load).")
+    return {"stocks": equities, "count": len(equities)}
+
+
+_fo_underlyings_cache: dict = {}
+_FO_UNDERLYINGS_TTL = 24 * 60 * 60  # 24h — this list changes rarely
+
+@app.get("/api/fo/underlyings")
+async def list_fo_underlyings():
+    """Full list of F&O underlyings (indices + ~211 stocks) from NSE."""
+    now = time.time()
+    if _fo_underlyings_cache.get("fetched_at") and now - _fo_underlyings_cache["fetched_at"] < _FO_UNDERLYINGS_TTL:
+        return {"underlyings": _fo_underlyings_cache["data"], "cached": True}
+    data = await get_fo_underlyings()
+    _fo_underlyings_cache["data"] = data
+    _fo_underlyings_cache["fetched_at"] = now
+    return {"underlyings": data, "cached": False}
+
+
+def _parse_angel_expiry(s: str) -> datetime.datetime:
+    """Parse Angel's 'DDMMMYYYY' expiry strings (e.g. '29SEP2026') for sorting."""
+    try:
+        return datetime.datetime.strptime(s, "%d%b%Y")
+    except Exception:
+        return datetime.datetime.max
+
+
+@app.get("/api/fo/option-chain")
+async def get_option_chain(underlying: str, expiry: Optional[str] = None, strikes: int = 10):
+    """Real option chain (LTP, OI, % change) for an F&O underlying, from Angel One.
+    `strikes` = how many strikes to include on each side of the ATM strike."""
+    client = get_angel_client()
+    if not client:
+        raise HTTPException(
+            status_code=503,
+            detail="Angel One session unavailable — check ANGEL_* credentials in backend/.env."
+        )
+    load_master_contract()
+
+    key = underlying.strip().upper()
+    contracts = get_option_contracts(key)
+    if not contracts:
+        raise HTTPException(status_code=404, detail=f"No F&O contracts found for '{underlying}'.")
+
+    all_expiries = sorted({c["expiry"] for c in contracts}, key=_parse_angel_expiry)
+    if expiry:
+        if expiry not in all_expiries:
+            raise HTTPException(status_code=400, detail=f"Unknown expiry '{expiry}' for {underlying}.")
+        chosen_expiry = expiry
+    else:
+        today = datetime.datetime.now()
+        future = [e for e in all_expiries if _parse_angel_expiry(e) >= today]
+        chosen_expiry = future[0] if future else all_expiries[0]
+
+    exp_contracts = [c for c in contracts if c["expiry"] == chosen_expiry]
+    strike_vals = sorted({c["strike"] for c in exp_contracts})
+
+    # Spot price, to center the strike window on the ATM strike.
+    spot = None
+    spot_info = _angel_broker._master_lookup.get(key) or _angel_broker._master_lookup.get(key + "-EQ")
+    if spot_info:
+        try:
+            res = client.getMarketData(mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
+            fetched = (res or {}).get("data", {}).get("fetched") or []
+            if fetched:
+                spot = float(fetched[0]["ltp"])
+        except Exception as e:
+            print(f"[WARN] option-chain spot lookup failed for {key}: {e}")
+
+    if spot:
+        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - spot))
+    else:
+        atm_idx = len(strike_vals) // 2
+    lo = max(0, atm_idx - strikes)
+    hi = min(len(strike_vals), atm_idx + strikes + 1)
+    selected_strikes = strike_vals[lo:hi]
+
+    by_strike: dict = {}
+    for c in exp_contracts:
+        if c["strike"] in selected_strikes:
+            by_strike.setdefault(c["strike"], {})[c["type"]] = c
+
+    tokens = [c["token"] for row in by_strike.values() for c in row.values()]
+    quotes: dict = {}
+    for i in range(0, len(tokens), 50):  # Angel caps tokens per request
+        batch = tokens[i:i + 50]
+        try:
+            res = client.getMarketData(mode="FULL", exchangeTokens={"NFO": batch})
+            for item in (res or {}).get("data", {}).get("fetched") or []:
+                quotes[item["symbolToken"]] = item
+        except Exception as e:
+            print(f"[WARN] option-chain quote batch failed: {e}")
+
+    def _row(c):
+        q = quotes.get(c["token"])
+        if not q:
+            return None
+        return {
+            "symbol": c["symbol"],
+            "ltp": q.get("ltp"),
+            "change_pct": q.get("percentChange"),
+            "oi": q.get("opnInterest"),
+            "volume": q.get("tradeVolume"),
+        }
+
+    rows = []
+    for strike in selected_strikes:
+        pair = by_strike.get(strike, {})
+        rows.append({
+            "strike": strike,
+            "ce": _row(pair["CE"]) if "CE" in pair else None,
+            "pe": _row(pair["PE"]) if "PE" in pair else None,
+        })
+
+    return {
+        "underlying": key,
+        "spot": spot,
+        "expiry": chosen_expiry,
+        "expiries": all_expiries[:12],
+        "rows": rows,
     }
 
 
