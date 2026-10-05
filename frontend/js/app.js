@@ -9,7 +9,7 @@ import { askA, sendChat } from './chat.js';
 import {
   toggleStrat, btFetchData, runBacktest, btReset, filterTrades,
   initReplay, rStep, togglePlay, getAIReview, askAIQa,
-  saveBacktestResult, loadBacktestHistory
+  saveBacktestResult, loadBacktestHistory, onBtTimeframeChange
 } from './backtest.js';
 import {
   refreshPaperTrading, resetPaperTrading, paperTradingLoop, _fetchDayStats,
@@ -124,6 +124,7 @@ window.runBacktest = runBacktest;
 window.btReset = btReset;
 window.filterTrades = filterTrades;
 window.saveBacktestResult = saveBacktestResult;
+window.onBtTimeframeChange = onBtTimeframeChange;
 window.initReplay = initReplay;
 window.rStep = rStep;
 window.togglePlay = togglePlay;

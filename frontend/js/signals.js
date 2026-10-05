@@ -8,6 +8,7 @@ import { Indicators } from './indicators.js';
 import { NewsFilter, applyNewsSentiment, setNiftyLastNewsSym } from './news.js';
 import { callClaude, extractJson } from './ai.js';
 import { showOv, hideOv } from './app.js';
+import { SIGNAL_TF } from './timeframes.js';
 
 /* ═══════════════════════════════════════════
    MODULE: ALGORITHMIC ENGINE (no API key needed)
@@ -194,10 +195,14 @@ export async function algoGlobal() {
 
 export async function algoSignal(prompt) {
   let sym = 'NIFTY 50';
-  const m1 = prompt.match(/Analyze\s+([\w\s]+?)\s+for\s+intraday/i);
+  const m1 = prompt.match(/Analyze\s+([\w\s]+?)\s+for\s+(?:intraday|swing)/i);
   const m2 = prompt.match(/Search for current\s+([\w\s]+?)\s+price/i);
   if (m1) sym = m1[1].trim();
   else if (m2) sym = m2[1].trim();
+
+  // Timeframe is encoded in the prompt as "(<segment>, <tf> timeframe)"; default 15min.
+  const tfMatch = prompt.match(/\(\w+,\s*(\w+)\s+timeframe\)/i);
+  const tfCfg = SIGNAL_TF[tfMatch?.[1]?.toLowerCase()] || SIGNAL_TF['15min'];
 
   let ys = sym;
   // Use the shared symbol map first (handles HDFC BANK → HDFCBANK.NS etc.)
@@ -217,7 +222,7 @@ export async function algoSignal(prompt) {
   }
 
   try {
-    const js = await yahooFetch(ys, '15m', '5d');
+    const js = await yahooFetch(ys, tfCfg.interval, tfCfg.range);
     if (!js) throw new Error('No data');
     const r = js.chart.result[0];
     const q = r.indicators.quote[0];
@@ -237,7 +242,10 @@ export async function algoSignal(prompt) {
     const ema50 = Indicators.ema(closes, 50);
 
     const cur = candles[candles.length - 1];
-    const prev = r.meta.chartPreviousClose || closes[0];
+    // Swing timeframes report change vs the previous candle (week/month/year), not vs range start.
+    const prev = (tfCfg.swing && closes.length > 1)
+      ? closes[closes.length - 2]
+      : (r.meta.chartPreviousClose || closes[0]);
     const diff = cur.c - prev;
     const pct = (diff / prev) * 100;
     const rsi = rsiArr[rsiArr.length - 1] || 50;
@@ -285,7 +293,7 @@ export async function algoSignal(prompt) {
       entry: cur.c.toFixed(2), sl: sl.toFixed(2), t1: t1.toFixed(2), t2: t2.toFixed(2),
       confidence: conf,
       rr: `1:${rtp.toFixed(1)}`,
-      basis: 'Algorithmic TA — RSI/EMA/VWAP/BB',
+      basis: `Algorithmic TA (${tfCfg.label}) — RSI/EMA/VWAP/BB`,
       rsi: rsi.toFixed(1) + (rsi > 60 ? ' Bullish' : rsi < 40 ? ' Bearish' : ' Neutral'),
       macd: e9 > e21 ? 'Bullish (9EMA > 21EMA)' : 'Bearish (9EMA < 21EMA)',
       bb: cur.c > bb.mid ? 'Above Mid Band' : 'Below Mid Band',
@@ -439,7 +447,8 @@ export async function generateSignal() {
 
   showOv(`SCANNING ${sym.toUpperCase()}...`);
   try {
-    const prompt = `Analyze ${sym} for intraday trading on NSE/BSE Indian markets (${seg}, ${tf} timeframe).
+    const style = SIGNAL_TF[tf]?.swing ? 'swing' : 'intraday';
+    const prompt = `Analyze ${sym} for ${style} trading on NSE/BSE Indian markets (${seg}, ${tf} timeframe).
 Search for current price, news, and technical setup for ${sym}.
 Respond ONLY in JSON:
 {"signal":"BUY/SELL/HOLD","symbol":"${sym.toUpperCase()}","entry":"price","sl":"price","t1":"price","t2":"price","confidence":72,"rr":"1:2.2","basis":"20 word basis","rsi":"value direction","macd":"direction","bb":"position","vwap":"above/below","ema":"above/below","volume":"level","analyst_note":"3-4 sentence veteran commentary","news_impact":"brief note"}`;

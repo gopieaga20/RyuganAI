@@ -264,6 +264,10 @@
               <option value="15min" selected>15 Min</option>
               <option value="30min">30 Min</option>
               <option value="1hr">1 Hour</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
             </select></div>
           <button class="btn btn-primary" onclick="generateSignal()">ANALYZE ▶</button>
         </div>
@@ -532,12 +536,15 @@
                   </select>
                 </div>
                 <div class="fg"><label>Timeframe</label>
-                  <select id="bt-tf">
+                  <select id="bt-tf" onchange="onBtTimeframeChange()">
                     <option value="5m">5 Min</option>
                     <option value="15m" selected>15 Min</option>
                     <option value="30m">30 Min</option>
                     <option value="1h">1 Hour</option>
                     <option value="1d">Daily</option>
+                    <option value="1wk">Weekly</option>
+                    <option value="1mo">Monthly</option>
+                    <option value="1y">Yearly</option>
                   </select>
                 </div>
                 <div class="fg"><label>Period</label>
@@ -546,6 +553,10 @@
                     <option value="3mo" selected>3 Months</option>
                     <option value="6mo">6 Months</option>
                     <option value="1y">1 Year</option>
+                    <option value="2y">2 Years</option>
+                    <option value="5y">5 Years</option>
+                    <option value="10y">10 Years</option>
+                    <option value="max">Max</option>
                   </select>
                 </div>
                 <div class="fg"><label>Segment</label>

@@ -1,0 +1,3 @@
+# Root requirements.txt so Railway's Nixpacks builder auto-detects this as a
+# Python app and installs backend/requirements.txt (the actual dependency list).
+-r backend/requirements.txt

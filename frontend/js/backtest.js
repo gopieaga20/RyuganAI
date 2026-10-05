@@ -7,6 +7,13 @@ import { Indicators } from './indicators.js';
 import { callClaude } from './ai.js';
 import { yahooFetch, getPrice } from './market-data.js';
 import { switchBTTab, showOv, hideOv } from './app.js';
+import { BT_SWING_INTERVALS, BT_DEFAULT_PERIOD, BT_PERIOD_DAYS } from './timeframes.js';
+
+export function onBtTimeframeChange() {
+  const tf = document.getElementById('bt-tf')?.value;
+  const period = document.getElementById('bt-period');
+  if (period && BT_DEFAULT_PERIOD[tf]) period.value = BT_DEFAULT_PERIOD[tf];
+}
 
 /* ═══════════════════════════════════════════
    MODULE: BACKTEST ENGINE
@@ -82,10 +89,28 @@ export async function btFetchData() {
 }
 
 export function genDemoData(tf, period) {
-  const bars = { '5m': 78, '15m': 26, '30m': 13, '1h': 6, '1d': 1 }[tf] || 26;
-  const days = { '1mo': 22, '3mo': 66, '6mo': 132, '1y': 252 }[period] || 66;
+  const days = BT_PERIOD_DAYS[period] || 66;
   const data = []; let price = 22000 + Math.random() * 1200;
   const now = new Date();
+
+  if (BT_SWING_INTERVALS.has(tf)) {
+    // One candle per daily/weekly/monthly/yearly step, random walk with mild drift.
+    const stepDays = { '1d': 1, '1wk': 7, '1mo': 30, '1y': 365 }[tf];
+    const count = Math.max(20, Math.floor((days * 1.45) / stepDays));
+    const volScale = { '1d': 0.012, '1wk': 0.03, '1mo': 0.06, '1y': 0.18 }[tf];
+    for (let n = count; n >= 0; n--) {
+      const ts = new Date(now); ts.setDate(ts.getDate() - n * stepDays); ts.setHours(9, 15, 0, 0);
+      const o = price;
+      const c = o * (1 + (Math.random() - 0.46) * volScale);
+      const h = Math.max(o, c) * (1 + Math.random() * volScale * 0.4);
+      const l = Math.min(o, c) * (1 - Math.random() * volScale * 0.4);
+      data.push({ ts: ts.getTime(), date: ts, o, h, l, c: parseFloat(c.toFixed(2)), v: Math.floor(1e6 + Math.random() * 5e6) });
+      price = c;
+    }
+    return data;
+  }
+
+  const bars = { '5m': 78, '15m': 26, '30m': 13, '1h': 6 }[tf] || 26;
   for (let d = days; d >= 0; d--) {
     const day = new Date(now);
     day.setDate(day.getDate() - d);
@@ -131,7 +156,11 @@ export function applyTrailingStop(pos, candle, atr) {
 }
 
 export function runBacktest() {
-  if (State.btData.length < 50) { alert('Fetch data first'); return; }
+  // Daily/weekly/monthly/yearly candles run as one continuous series (no per-day
+  // grouping, no time-of-day filter, no EOD square-off, no opening-range strategy).
+  const isSwing = BT_SWING_INTERVALS.has(document.getElementById('bt-tf')?.value);
+  if (State.btData.length < (isSwing ? 15 : 50)) { alert('Fetch data first (not enough candles for this timeframe)'); return; }
+  const warmup = isSwing ? Math.min(30, Math.max(10, Math.floor(State.btData.length / 4))) : 30;
   showOv('RUNNING BACKTEST ENGINE...');
   State.tradeLog = [];
   const segment = document.getElementById('bt-segment')?.value || 'intraday';
@@ -155,10 +184,10 @@ export function runBacktest() {
       tp: +(document.getElementById(`${s}-tp`)?.value || 2.5)
     });
 
-    // Group by trading day
+    // Group by trading day (intraday) or treat the whole series as one run (swing)
     const days = {};
     State.btData.forEach((c, i) => {
-      const k = c.date.toISOString().slice(0, 10);
+      const k = isSwing ? 'all' : c.date.toISOString().slice(0, 10);
       if (!days[k]) days[k] = [];
       days[k].push(i);
     });
@@ -174,7 +203,7 @@ export function runBacktest() {
           openHigh = Math.max(openHigh, State.btData[i].h);
           openLow = Math.min(openLow, State.btData[i].l);
         }
-        if (i < 30) return;
+        if (i < warmup) return;
 
         const c = State.btData[i];
         const price = c.c;
@@ -200,7 +229,7 @@ export function runBacktest() {
             if (p.dir === 'LONG' && efArr[i - 1] >= esArr[i - 1] && efArr[i] < esArr[i]) { xp = price; xr = 'Opposing Cross'; }
             if (p.dir === 'SHORT' && efArr[i - 1] <= esArr[i - 1] && efArr[i] > esArr[i]) { xp = price; xr = 'Opposing Cross'; }
           }
-          if (isLast && !xp) { xp = price; xr = 'EOD 3:15'; }
+          if (isLast && !xp) { xp = price; xr = isSwing ? 'End of Data' : 'EOD 3:15'; }
 
           if (xp) {
             const qty = p.qty;
@@ -231,7 +260,7 @@ export function runBacktest() {
 
         activeStrats.forEach(st => {
           if (!State.selStrats.has(st) || pos[st] || isLast) return;
-          if (hr > 13 || (hr === 13 && mn > 45)) return;
+          if (!isSwing && (hr > 13 || (hr === 13 && mn > 45))) return;
           let sig = null;
 
           if (st === 'ema') {
@@ -241,7 +270,7 @@ export function runBacktest() {
             else if (efArr[i - 1] >= esArr[i - 1] && efArr[i] < esArr[i] && price < e50[i] && price < vwapV[i] && rsiSell && strongCandle) sig = 'SHORT';
           }
           else if (st === 'orb') {
-            if (hr === 9 && mn <= 30) return;
+            if (isSwing || (hr === 9 && mn <= 30)) return;
             const volOk = c.v > avgVol * +(document.getElementById('orb-v')?.value || 1.5);
             if (c.c > openHigh && State.btData[i - 1].c <= openHigh && volOk && c.c > vwapV[i]) sig = 'LONG';
             else if (c.c < openLow && State.btData[i - 1].c >= openLow && volOk && c.c < vwapV[i]) sig = 'SHORT';

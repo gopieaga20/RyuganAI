@@ -295,6 +295,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/health")
+async def health():
+    """Liveness check — deliberately doesn't touch the DB, so a deploy platform's
+    health check reflects whether the process is up, not whether Postgres is."""
+    return {"status": "ok"}
+
+
 def _get_pool(request: Request) -> asyncpg.Pool:
     pool = request.app.state.pool
     if pool is None:
@@ -889,6 +896,48 @@ async def search_yahoo(q: str):
 _INTRADAY_INTERVALS = {"1m", "5m", "15m", "30m"}
 _LONG_RANGES = {"3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
 
+
+def _aggregate_yearly(chart_json: dict) -> dict:
+    """Yahoo has no yearly interval, so roll its monthly candles up into calendar years
+    (open = first month's open, close = last month's close, high/low = extremes, volume = sum).
+    The result keeps Yahoo's response shape so existing frontend parsing works unchanged."""
+    result = chart_json["chart"]["result"][0]
+    ts = result.get("timestamp") or []
+    q = result["indicators"]["quote"][0]
+
+    years: dict = {}
+    for i, t in enumerate(ts):
+        c = q["close"][i]
+        if c is None:
+            continue
+        o, h, l, v = q["open"][i], q["high"][i], q["low"][i], q["volume"][i]
+        y = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).year
+        b = years.get(y)
+        if b is None:
+            years[y] = {
+                "t": t, "o": o if o is not None else c,
+                "h": h if h is not None else c, "l": l if l is not None else c,
+                "c": c, "v": v or 0,
+            }
+        else:
+            if h is not None:
+                b["h"] = max(b["h"], h)
+            if l is not None:
+                b["l"] = min(b["l"], l)
+            b["c"] = c
+            b["v"] += v or 0
+
+    ordered = [years[y] for y in sorted(years)]
+    result["timestamp"] = [b["t"] for b in ordered]
+    result["indicators"] = {"quote": [{
+        "open": [b["o"] for b in ordered],
+        "high": [b["h"] for b in ordered],
+        "low": [b["l"] for b in ordered],
+        "close": [b["c"] for b in ordered],
+        "volume": [b["v"] for b in ordered],
+    }]}
+    return chart_json
+
 @app.get("/api/yahoo-chart/{symbol}")
 async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"):
     """
@@ -902,8 +951,16 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
         if angel_data:
             return JSONResponse(content=angel_data)
 
-    if interval in _INTRADAY_INTERVALS and range in _LONG_RANGES:
+    yearly = interval == "1y"
+    if yearly:
+        # No native yearly interval: fetch monthly history and aggregate it below.
+        interval = "1mo"
+        if range not in ("5y", "10y", "max"):
+            range = "max"
+    elif interval in _INTRADAY_INTERVALS and range in _LONG_RANGES:
         range = "60d"
+    elif interval == "1h" and range in ("5y", "10y", "max"):
+        range = "2y"  # Yahoo only serves ~730 days of hourly data
 
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/"
@@ -932,7 +989,13 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
             detail=f"Yahoo Finance returned {response.status_code}"
         )
 
-    return JSONResponse(content=response.json())
+    payload = response.json()
+    if yearly:
+        try:
+            payload = _aggregate_yearly(payload)
+        except (KeyError, IndexError, TypeError):
+            raise HTTPException(status_code=502, detail="Could not build yearly candles from Yahoo data")
+    return JSONResponse(content=payload)
 
 
 # ─────────────────────────────────────────────
