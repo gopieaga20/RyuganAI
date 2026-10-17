@@ -69,7 +69,7 @@ def test_unlisted_strike_returns_nothing():
     assert ab.search_option_contracts("NIFTY 99999") == []
 
 
-@pytest.mark.parametrize("sym", ["NIFTY27OCT2623100CE", "BANKNIFTY27OCT2651000PE", "RELIANCE27OCT261260CE"])
+@pytest.mark.parametrize("sym", ["NIFTY27OCT2623100CE", "BANKNIFTY27OCT2651000PE", "RELIANCE27OCT261260CE", "360ONE27OCT26900CE", "M&M27OCT263000PE"])
 def test_option_symbol_regex_and_price_symbol_passthrough(sym):
     assert _OPTION_SYMBOL_RE.match(sym)
     assert _to_price_symbol(sym) == sym  # must not get ".NS" appended

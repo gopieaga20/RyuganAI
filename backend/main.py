@@ -160,7 +160,7 @@ _SYMBOL_ALIASES = {
 
 
 # Real option contract trading symbol, e.g. NIFTY27OCT2623100CE / RELIANCE27OCT261260PE
-_OPTION_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$")
+_OPTION_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$")
 
 
 def _to_price_symbol(symbol: str) -> str:
@@ -176,7 +176,7 @@ async def _fetch_ltp(symbol: str) -> Optional[float]:
     """Fetch last traded price for a position symbol: Angel One first, Yahoo Finance fallback."""
     price_sym = _to_price_symbol(symbol)
 
-    angel_data = get_angel_quote(price_sym)
+    angel_data = await asyncio.to_thread(get_angel_quote, price_sym)
     if angel_data:
         try:
             return float(angel_data["chart"]["result"][0]["meta"]["regularMarketPrice"])
@@ -304,6 +304,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def revalidate_static_files(request: Request, call_next):
+    """The ES modules in frontend/js are loaded without version suffixes, so without this a browser
+    can keep serving stale copies after an update. no-cache = always revalidate (cheap 304 via ETag)."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 
 @app.get("/api/health")
 async def health():
@@ -595,7 +605,7 @@ async def ws_prices(websocket: WebSocket):
 async def list_stocks():
     """Full NSE cash-market equity list (~2700 symbols), from Angel's public
     scrip master — no broker session/API key required for this endpoint."""
-    equities = get_nse_equities()
+    equities = await asyncio.to_thread(get_nse_equities)
     if not equities:
         raise HTTPException(status_code=503, detail="Stock list unavailable (scrip master failed to load).")
     return {"stocks": equities, "count": len(equities)}
@@ -635,16 +645,18 @@ def _parse_angel_expiry(s: str) -> datetime.datetime:
 
 
 @app.get("/api/fo/option-chain")
-async def get_option_chain(underlying: str, expiry: Optional[str] = None, strikes: int = 10):
+async def get_option_chain(underlying: str, expiry: Optional[str] = None, strikes: int = 10,
+                           center: Optional[float] = None):
     """Real option chain (LTP, OI, % change) for an F&O underlying, from Angel One.
-    `strikes` = how many strikes to include on each side of the ATM strike."""
-    client = get_angel_client()
+    `strikes` = how many strikes to include on each side of the window centre, which is the
+    ATM strike by default or `center` (e.g. a specific contract's strike) when given."""
+    client = await asyncio.to_thread(get_angel_client)
     if not client:
         raise HTTPException(
             status_code=503,
             detail="Angel One session unavailable — check ANGEL_* credentials in backend/.env."
         )
-    load_master_contract()
+    await asyncio.to_thread(load_master_contract)
 
     key = underlying.strip().upper()
     contracts = get_option_contracts(key)
@@ -669,14 +681,17 @@ async def get_option_chain(underlying: str, expiry: Optional[str] = None, strike
     spot_info = _angel_broker._master_lookup.get(key) or _angel_broker._master_lookup.get(key + "-EQ")
     if spot_info:
         try:
-            res = client.getMarketData(mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
+            res = await asyncio.to_thread(
+                client.getMarketData, mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
             fetched = (res or {}).get("data", {}).get("fetched") or []
             if fetched:
                 spot = float(fetched[0]["ltp"])
         except Exception as e:
             print(f"[WARN] option-chain spot lookup failed for {key}: {e}")
 
-    if spot:
+    if center is not None:
+        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - center))
+    elif spot:
         atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - spot))
     else:
         atm_idx = len(strike_vals) // 2
@@ -694,7 +709,7 @@ async def get_option_chain(underlying: str, expiry: Optional[str] = None, strike
     for i in range(0, len(tokens), 50):  # Angel caps tokens per request
         batch = tokens[i:i + 50]
         try:
-            res = client.getMarketData(mode="FULL", exchangeTokens={"NFO": batch})
+            res = await asyncio.to_thread(client.getMarketData, mode="FULL", exchangeTokens={"NFO": batch})
             for item in (res or {}).get("data", {}).get("fetched") or []:
                 quotes[item["symbolToken"]] = item
         except Exception as e:
@@ -741,7 +756,7 @@ async def get_angel_status():
         # angel_broker is imported at module level (with try/except guard).
         # Import the module-level singletons directly to avoid repeated imports.
         import angel_broker as _ab # type: ignore
-        client = _ab.get_angel_client()
+        client = await asyncio.to_thread(_ab.get_angel_client)
         return {
             "connected": bool(client and _ab._auth_token),
             "master_loaded": _ab._is_loaded,
@@ -773,7 +788,7 @@ async def angel_historical(
     if days < 1 or days > 365:
         raise HTTPException(status_code=400, detail="days must be 1-365")
 
-    candles = get_angel_historical(symbol, interval=interval, days=days)
+    candles = await asyncio.to_thread(get_angel_historical, symbol, interval=interval, days=days)
     if candles is None:
         raise HTTPException(
             status_code=503,
@@ -830,7 +845,7 @@ async def get_global_cues():
     gift_data = None
     try:
         import angel_broker as _ab
-        _ab.load_master_contract()
+        await asyncio.to_thread(_ab.load_master_contract)
         import re
         fut_pattern = re.compile(r"^NIFTY\d{2}[A-Z]{3}\d{2}FUT$")
         nifty_futs = [k for k in _ab._master_lookup.keys() if fut_pattern.match(k)]
@@ -841,7 +856,7 @@ async def get_global_cues():
                 except Exception:
                     return datetime.datetime.max
             nearest_fut = sorted(nifty_futs, key=_parse_fut_date)[0]
-            gift_data = get_angel_quote(nearest_fut)
+            gift_data = await asyncio.to_thread(get_angel_quote, nearest_fut)
     except Exception as e:
         print("Error resolving NIFTY FUT:", e)
 
@@ -1007,7 +1022,7 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
     """
     # Only intercept with Angel One for simple LTP lookups (small range, not historical chart data)
     if range in ("1d", "2d"):
-        angel_data = get_angel_quote(symbol)
+        angel_data = await asyncio.to_thread(get_angel_quote, symbol)
         if angel_data:
             return JSONResponse(content=angel_data)
 

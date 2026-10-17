@@ -17,7 +17,7 @@ import {
   executeCurrentSignal, executePaperTrade, squareOffPosition, ptModifyPosition
 } from './paper-trading.js';
 import { openStockBrowser, closeStockBrowser } from './stock-browser.js';
-import { loadOptionChain } from './option-chain.js';
+import { loadOptionChain, runFoAnalysis } from './option-chain.js';
 
 /* ═══════════════════════════════════════════
    MODULE: LOADING
@@ -150,3 +150,4 @@ window.ptModifyPosition = ptModifyPosition;
 window.openStockBrowser = openStockBrowser;
 window.closeStockBrowser = closeStockBrowser;
 window.loadOptionChain = loadOptionChain;
+window.runFoAnalysis = runFoAnalysis;

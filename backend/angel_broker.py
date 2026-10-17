@@ -8,6 +8,7 @@ import os
 import re
 import urllib.request
 import json
+import threading
 import pyotp # type: ignore
 from datetime import datetime, timedelta
 
@@ -19,6 +20,9 @@ _master_lookup = {}        # symbol -> {exch, token}
 _is_loaded = False
 _nse_equities = []         # [{symbol, name}, ...] — all NSE cash-market equities
 _options_index = {}        # underlying name -> [{symbol, token, expiry, strike, type}, ...]
+# The SDK is synchronous and the API calls it from worker threads, so login and the one-time
+# master-contract download must not run twice concurrently.
+_lock = threading.RLock()
 
 # ── Session management ────────────────────────────────────────────────────────
 
@@ -37,27 +41,28 @@ def get_angel_client():
     if not all([api_key, client_code, password, totp_secret]):
         return None
 
-    # Already have a session — return it
-    if _angel_obj and _auth_token:
-        return _angel_obj
+    with _lock:
+        # Already have a session — return it
+        if _angel_obj and _auth_token:
+            return _angel_obj
 
-    try:
-        from SmartApi import SmartConnect # type: ignore
-        obj = SmartConnect(api_key=api_key)
-        totp = pyotp.TOTP(totp_secret).now()
-        data = obj.generateSession(client_code, password, totp)
-        if not data or not data.get("status"):
-            print("Angel SmartAPI login failed:", data)
+        try:
+            from SmartApi import SmartConnect # type: ignore
+            obj = SmartConnect(api_key=api_key)
+            totp = pyotp.TOTP(totp_secret).now()
+            data = obj.generateSession(client_code, password, totp)
+            if not data or not data.get("status"):
+                print("Angel SmartAPI login failed:", data)
+                return None
+
+            _angel_obj  = obj
+            _auth_token = data["data"]["jwtToken"]
+            _feed_token = data["data"].get("feedToken", "")
+            print("Angel SmartAPI: logged in successfully.")
+            return _angel_obj
+        except Exception as e:
+            print("Angel SmartAPI init error:", e)
             return None
-
-        _angel_obj  = obj
-        _auth_token = data["data"]["jwtToken"]
-        _feed_token = data["data"].get("feedToken", "")
-        print("Angel SmartAPI: logged in successfully.")
-        return _angel_obj
-    except Exception as e:
-        print("Angel SmartAPI init error:", e)
-        return None
 
 def invalidate_session():
     """Call this when a session-expired error is detected to force re-login."""
@@ -72,6 +77,14 @@ def load_master_contract():
     even when the Angel trading session itself is unavailable."""
     global _is_loaded, _master_lookup, _nse_equities, _options_index
     if _is_loaded:
+        return
+    with _lock:
+        _load_master_contract_locked()
+
+
+def _load_master_contract_locked():
+    global _is_loaded, _master_lookup, _nse_equities, _options_index
+    if _is_loaded:  # another thread finished the download while we waited for the lock
         return
     try:
         print("Downloading Angel OpenAPIScripMaster.json...")

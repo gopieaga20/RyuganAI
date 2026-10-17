@@ -205,6 +205,6 @@ export function _toYahooSym(name) {
   const n = name.toUpperCase();
   if (n.match(/^(NIFTY|BANKNIFTY)\s+(\d{1,2}\s+[A-Z]{3})\s+(\d+)\s+(CE|PE)$/i)) return n;
   // Real contract trading symbol, e.g. NIFTY27OCT2623100CE
-  if (/^[A-Z][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$/.test(n)) return n;
+  if (/^[A-Z0-9][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$/.test(n)) return n;
   return _SYM_MAP[n] || (n.endsWith('.NS') ? n : n + '.NS');
 }
