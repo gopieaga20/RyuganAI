@@ -15,6 +15,7 @@ import os
 import datetime
 import time
 import json
+import re
 import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
 from typing import Optional, Any
@@ -26,6 +27,7 @@ try:
         get_historical as get_angel_historical,
         get_nse_equities,
         get_option_contracts,
+        search_option_contracts,
         get_angel_client,
         load_master_contract,
     )
@@ -35,6 +37,7 @@ except ImportError:
     def get_angel_historical(sym, interval="15m", days=90): return None
     def get_nse_equities(): return []
     def get_option_contracts(underlying): return []
+    def search_option_contracts(query, limit=40): return []
     def get_angel_client(): return None
     def load_master_contract(): pass
     _angel_broker = None
@@ -58,6 +61,8 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022").str
 async def lifespan(app: FastAPI):
     """Create the asyncpg pool on startup, teardown on shutdown."""
     watcher_task = None
+    # Warm the Angel scrip master in the background so the first stock/option search is instant.
+    master_task = asyncio.create_task(asyncio.to_thread(load_master_contract))
     try:
         pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
         app.state.pool = pool
@@ -69,6 +74,7 @@ async def lifespan(app: FastAPI):
         print("       Starting without DB - paper trading endpoints will return 503.")
         app.state.pool = None
     yield
+    master_task.cancel()
     if watcher_task:
         watcher_task.cancel()
         try:
@@ -153,11 +159,15 @@ _SYMBOL_ALIASES = {
 }
 
 
+# Real option contract trading symbol, e.g. NIFTY27OCT2623100CE / RELIANCE27OCT261260PE
+_OPTION_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$")
+
+
 def _to_price_symbol(symbol: str) -> str:
     """Map a position's stored symbol to a Yahoo/Angel-lookup-friendly symbol."""
     if symbol in _SYMBOL_ALIASES:
         return _SYMBOL_ALIASES[symbol]
-    if "^" in symbol or symbol.endswith(".NS"):
+    if "^" in symbol or symbol.endswith(".NS") or _OPTION_SYMBOL_RE.match(symbol):
         return symbol
     return symbol + ".NS"
 
@@ -606,6 +616,16 @@ async def list_fo_underlyings():
     return {"underlyings": data, "cached": False}
 
 
+@app.get("/api/options/search")
+async def search_options(q: str, limit: int = 40):
+    """Real, unexpired option contracts matching free text like "NIFTY 23100" or "reliance 1260 ce".
+    Powers the symbol-box suggestions. Needs a strike in the query; returns [] otherwise.
+    Uses only Angel's public scrip master, so no broker login is required."""
+    limit = max(1, min(100, limit))
+    results = await asyncio.to_thread(search_option_contracts, q, limit)
+    return {"contracts": results, "count": len(results)}
+
+
 def _parse_angel_expiry(s: str) -> datetime.datetime:
     """Parse Angel's 'DDMMMYYYY' expiry strings (e.g. '29SEP2026') for sorting."""
     try:
@@ -897,6 +917,46 @@ _INTRADAY_INTERVALS = {"1m", "5m", "15m", "30m"}
 _LONG_RANGES = {"3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
 
 
+_OPTION_CHART_DAYS = {
+    "1d": 1, "2d": 2, "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
+    "1y": 365, "2y": 365, "5y": 365, "10y": 365, "ytd": 365, "max": 365,
+}
+_ANGEL_INTRADAY = {"1m", "5m", "15m", "30m", "1h"}
+
+
+async def _option_chart(symbol: str, interval: str, range_: str) -> dict:
+    """Candles for a real option contract from Angel, shaped like Yahoo's chart JSON.
+    Angel has no weekly/monthly history for contracts (and they only live weeks anyway),
+    so those timeframes fall back to daily candles."""
+    if interval not in _ANGEL_INTRADAY and interval != "1d":
+        interval = "1d"
+    days = _OPTION_CHART_DAYS.get(range_, 30)
+    if interval in _ANGEL_INTRADAY:
+        days = min(days, 60)  # keep within Angel's intraday history limits
+    candles = await asyncio.to_thread(get_angel_historical, symbol, interval, days)
+    if not candles:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No candle data for {symbol} (Angel One session/key unavailable, or contract has no history)."
+        )
+    closes = [c["c"] for c in candles]
+    return {"chart": {"result": [{
+        "meta": {
+            "symbol": symbol,
+            "regularMarketPrice": closes[-1],
+            "chartPreviousClose": closes[0],
+        },
+        "timestamp": [c["t"] for c in candles],
+        "indicators": {"quote": [{
+            "open": [c["o"] for c in candles],
+            "high": [c["h"] for c in candles],
+            "low": [c["l"] for c in candles],
+            "close": closes,
+            "volume": [c["v"] for c in candles],
+        }]},
+    }], "error": None}}
+
+
 def _aggregate_yearly(chart_json: dict) -> dict:
     """Yahoo has no yearly interval, so roll its monthly candles up into calendar years
     (open = first month's open, close = last month's close, high/low = extremes, volume = sum).
@@ -950,6 +1010,10 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
         angel_data = get_angel_quote(symbol)
         if angel_data:
             return JSONResponse(content=angel_data)
+
+    # Real option contracts aren't on Yahoo — serve Angel's candles in Yahoo's response shape.
+    if _OPTION_SYMBOL_RE.match(symbol.upper()):
+        return JSONResponse(content=await _option_chart(symbol.upper(), interval, range))
 
     yearly = interval == "1y"
     if yearly:

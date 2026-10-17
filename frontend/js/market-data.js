@@ -32,6 +32,7 @@ export async function getPrice(sym) {
 }
 
 let _searchTimeout = null;
+let _searchSeq = 0;
 export async function debounceSearch(ev, listId) {
   const q = ev.target.value.trim();
   if (q.length < 2) return;
@@ -42,60 +43,47 @@ export async function debounceSearch(ev, listId) {
       const list = document.getElementById(listId);
       if (!list) return;
 
-      // 1. Generate Synthetic Options if a strike price (number) is typed
-      const match = q.match(/(\d{4,5})/);
-      let synthOptions = [];
-      if (match) {
-        const strike = match[1];
-        const d = new Date();
-        const qUp = q.toUpperCase();
-        
-        // Loop for current expiry + next 2 expiries
-        for (let i = 0; i < 3; i++) {
-          // Tuesday (NIFTY)
-          const nD = new Date(d);
-          nD.setDate(d.getDate() + ((2 + 7 - d.getDay()) % 7) + (i * 7));
-          const nExp = nD.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase();
-          
-          // Wednesday (BANKNIFTY)
-          const bD = new Date(d);
-          bD.setDate(d.getDate() + ((3 + 7 - d.getDay()) % 7) + (i * 7));
-          const bExp = bD.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).toUpperCase();
+      const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 
-          if (qUp.includes('BANK') || !qUp.includes('NIFTY')) {
-            synthOptions.push(`<option value="BANKNIFTY ${bExp} ${strike} CE">BANKNIFTY ${bExp} ${strike} CE (Option)</option>`);
-            synthOptions.push(`<option value="BANKNIFTY ${bExp} ${strike} PE">BANKNIFTY ${bExp} ${strike} PE (Option)</option>`);
-          }
-          if (!qUp.includes('BANK')) {
-            synthOptions.push(`<option value="NIFTY ${nExp} ${strike} CE">NIFTY ${nExp} ${strike} CE (Option)</option>`);
-            synthOptions.push(`<option value="NIFTY ${nExp} ${strike} PE">NIFTY ${nExp} ${strike} PE (Option)</option>`);
-          }
-        }
-      }
+      // 1. Real option contracts (from Angel's scrip master) when a strike number is typed.
+      //    The browser filters datalist entries by what you typed (matching value OR label),
+      //    so the label also carries the typed text — otherwise "NIFTY 23100" would hide
+      //    "NIFTY27OCT2623100CE", since neither contains that text as typed.
+      const optionsReq = /\d{3,}/.test(q)
+        ? fetch(`${CONFIG.PROXY_BASE}/api/options/search?q=${encodeURIComponent(q)}&limit=40`)
+            .then(r => (r.ok ? r.json() : { contracts: [] })).catch(() => ({ contracts: [] }))
+        : Promise.resolve({ contracts: [] });
 
-      // 2. Fetch Equity/Index symbols from Yahoo Finance
-      const res = await fetch(`${CONFIG.PROXY_BASE}/api/yahoo/search?q=${encodeURIComponent(q)}`);
+      // 2. Equity/Index symbols from Yahoo Finance
+      const yahooReq = fetch(`${CONFIG.PROXY_BASE}/api/yahoo/search?q=${encodeURIComponent(q)}`)
+        .then(r => (r.ok ? r.json() : null)).catch(() => null);
+
+      const seq = ++_searchSeq;
+      const optionOptionsFrom = (d) => (d.contracts || []).map(c =>
+        `<option value="${esc(c.symbol)}" label="${esc(c.label)} (${esc(q)})">${esc(c.label)} (Option)</option>`);
+
+      // Show real contracts as soon as they arrive — don't wait for Yahoo's slower autosuggest.
+      const optData = await optionsReq;
+      if (seq !== _searchSeq) return; // a newer keystroke superseded this search
+      const optionOptions = optionOptionsFrom(optData);
+      if (optionOptions.length) list.innerHTML = optionOptions.join('');
+
+      const yahooData = await yahooReq;
+      if (seq !== _searchSeq) return;
+
       let yahooOptions = [];
-      if (res.ok) {
-        const data = await res.json();
-        if (data.quotes) {
-          yahooOptions = data.quotes
-            .filter(q => q.symbol && (q.symbol.endsWith('.NS') || q.symbol.endsWith('.NFO') || q.symbol.endsWith('.BO') || q.symbol.startsWith('^')))
-            .map(q => {
-               let sym = q.symbol.replace('.NS', '').replace('.BO', '').replace('.NFO', '');
-               if (sym.startsWith('^')) sym = q.shortname || sym;
-               return `<option value="${sym}">${q.shortname || q.longname || ''} (${q.typeDisp || 'Equity'})</option>`;
-            });
-        }
+      if (yahooData?.quotes) {
+        yahooOptions = yahooData.quotes
+          .filter(q => q.symbol && (q.symbol.endsWith('.NS') || q.symbol.endsWith('.NFO') || q.symbol.endsWith('.BO') || q.symbol.startsWith('^')))
+          .map(q => {
+            let sym = q.symbol.replace('.NS', '').replace('.BO', '').replace('.NFO', '');
+            if (sym.startsWith('^')) sym = q.shortname || sym;
+            return `<option value="${esc(sym)}">${esc(q.shortname || q.longname || '')} (${esc(q.typeDisp || 'Equity')})</option>`;
+          });
       }
-      
-      // 3. Combine and render
-      const allOps = synthOptions.concat(yahooOptions);
-      if (allOps.length > 0) {
-        list.innerHTML = allOps.join('');
-      } else {
-        list.innerHTML = ''; // Clear if no matches
-      }
+
+      // Final list: real contracts first, then equities/indices
+      list.innerHTML = optionOptions.concat(yahooOptions).join('');
     } catch (e) { console.error('Search failed', e); }
   }, 400); // 400ms debounce
 }
@@ -216,5 +204,7 @@ export const _SYM_MAP = {
 export function _toYahooSym(name) {
   const n = name.toUpperCase();
   if (n.match(/^(NIFTY|BANKNIFTY)\s+(\d{1,2}\s+[A-Z]{3})\s+(\d+)\s+(CE|PE)$/i)) return n;
+  // Real contract trading symbol, e.g. NIFTY27OCT2623100CE
+  if (/^[A-Z][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$/.test(n)) return n;
   return _SYM_MAP[n] || (n.endsWith('.NS') ? n : n + '.NS');
 }

@@ -127,6 +127,80 @@ def get_nse_equities():
     return _nse_equities
 
 
+def _expiry_date(s: str):
+    try:
+        return datetime.strptime(s, "%d%b%Y")
+    except Exception:
+        return datetime.max
+
+
+def search_option_contracts(query: str, limit: int = 40):
+    """Search real, unexpired option contracts from the scrip master.
+
+    `query` is free text such as "NIFTY 23100", "banknifty 51000 pe", "reliance 1260 ce sep".
+    Words pick the underlying (prefix match), digits pick the strike, CE/PE picks the type,
+    and a month name/day like SEP or 29SEP narrows the expiry. A strike is required —
+    without one the result set would be thousands of contracts.
+    Returns [{symbol, label, underlying, expiry, strike, type}, ...], soonest expiry first."""
+    load_master_contract()
+
+    words, strike, opt_type, expiry_hint = [], None, None, None
+    for tok in re.split(r"[\s,]+", query.strip().upper()):
+        if not tok:
+            continue
+        if tok.isdigit():
+            if strike is None:
+                strike = float(tok)
+        elif tok in ("CE", "PE"):
+            opt_type = tok
+        elif re.fullmatch(r"\d{0,2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})?", tok):
+            expiry_hint = tok
+        else:
+            words.append(tok)
+
+    if strike is None:
+        return []
+
+    if words:
+        # Join so "BANK NIFTY" matches BANKNIFTY; an exact underlying wins over longer prefixes
+        # (NIFTY must not drag in NIFTYNXT50).
+        name = "".join(words)
+        exact = [u for u in _options_index if u == name]
+        underlyings = exact or [u for u in _options_index if u.startswith(name)]
+    else:
+        underlyings = [u for u in _options_index if u in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")]
+
+    now = datetime.now()
+    hits = []
+    for u in underlyings:
+        for c in _options_index[u]:
+            if c["strike"] != strike:
+                continue
+            if opt_type and c["type"] != opt_type:
+                continue
+            exp = _expiry_date(c["expiry"])
+            if exp.date() < now.date():
+                continue
+            if expiry_hint and expiry_hint not in c["expiry"]:
+                continue
+            hits.append((exp, u, c))
+
+    hits.sort(key=lambda h: (h[0], h[1], h[2]["type"]))
+    out = []
+    for exp, u, c in hits[:limit]:
+        e = c["expiry"]  # 27OCT2026 -> "27 OCT 2026"
+        strike_txt = f"{c['strike']:g}"
+        out.append({
+            "symbol": c["symbol"],
+            "label": f"{u} {e[:2]} {e[2:5]} {e[5:]} {strike_txt} {c['type']}",
+            "underlying": u,
+            "expiry": e,
+            "strike": c["strike"],
+            "type": c["type"],
+        })
+    return out
+
+
 def get_option_contracts(underlying: str):
     """Return all option contracts for an F&O underlying (e.g. 'NIFTY', 'RELIANCE'):
     [{symbol, token, expiry, strike, type}, ...], or [] if the underlying has no F&O."""
