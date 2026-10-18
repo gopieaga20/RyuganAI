@@ -157,18 +157,25 @@ Respond ONLY in JSON: {"sgx":"level","dow":"level change","crude":"price change"
   }
 }
 
-export function updateVIX(v) {
+/** Fill the India VIX dashboard card (F&O tab) from a VIX level. Returns the zone label. */
+export function renderVixDashboard(v) {
   const n = parseFloat(v);
-  DOM.setText('h-vix', v);
-  DOM.setText('vix-big', v);
+  if (isNaN(n)) return null;
   const zone = n < 12 ? 'CALM' : n < 16 ? 'NORMAL' : n < 20 ? 'ELEVATED' : n < 25 ? 'HIGH' : 'EXTREME';
-  const color = n < 12 ? 'var(--green)' : n < 16 ? 'var(--text2)' : n < 20 ? 'var(--warn)' : 'var(--down)';
-  DOM.setText('vix-zone', zone); DOM.setColor('vix-zone', color);
-  DOM.setText('h-vix-c', zone);
+  const color = n < 12 ? 'var(--clr-green)' : n < 16 ? 'var(--clr-text-2)' : n < 20 ? 'var(--clr-amber)' : 'var(--clr-red)';
+  DOM.setText('vix-big', n.toFixed(2));
   DOM.setColor('vix-big', color);
+  DOM.setText('vix-zone', zone); DOM.setColor('vix-zone', color);
   DOM.setText('vix-mood', n < 16 ? 'Calm / Greed' : 'Fear / Volatile');
   DOM.setText('vix-prem', n > 18 ? 'HIGH — Sell premium' : 'NORMAL — Buy directional');
   DOM.setText('vix-strat', n > 20 ? 'Iron Condor / Strangle sell' : n > 15 ? 'Straddle / Vertical spread' : 'Buy calls/puts directionally');
+  return zone;
+}
+
+export function updateVIX(v) {
+  DOM.setText('h-vix', v);
+  const zone = renderVixDashboard(v);
+  if (zone) DOM.setText('h-vix-c', zone);
 }
 
 export async function fetchLiveTickers() {
@@ -186,6 +193,8 @@ export async function fetchLiveTickers() {
     const col = d.pct >= 0 ? 'var(--clr-green)' : 'var(--clr-red)';
     DOM.setText(t.valId, fmt);
     if (t.chgId) { DOM.setText(t.chgId, chg); DOM.setColor(t.chgId, col); }
+    // The VIX dashboard used to fill only when the AI returned a VIX value; feed it from this live price too.
+    if (t.sym === '^INDIAVIX') renderVixDashboard(d.c);
   }));
   // Also refresh watchlist with new prices
   WL.refresh();

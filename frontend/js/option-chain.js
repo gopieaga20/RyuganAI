@@ -13,6 +13,45 @@ import { analyzeFO } from './signals.js';
 
 let _lastUnderlying = null;
 let _highlight = null; // { strike, type } of a contract the user picked, if any
+let _cardsFromChain = false; // true once the PCR/Max Pain cards hold real values from the chain
+
+/** True when the PCR / Max Pain cards show real chain-derived values, so the algorithmic
+ *  placeholder in analyzeFO() must not overwrite them. */
+export function chainCardsActive() { return _cardsFromChain; }
+
+/** PCR and max pain from the strikes in `rows` (the visible window, not the full chain). */
+export function computeChainStats(rows) {
+  let ceOi = 0, peOi = 0;
+  for (const r of rows) { ceOi += r.ce?.oi || 0; peOi += r.pe?.oi || 0; }
+  if (!rows.length || ceOi <= 0) return null;
+
+  // Max pain: the strike where option buyers lose the most at expiry (writers pay out the least).
+  let best = null;
+  for (const cand of rows) {
+    let pain = 0;
+    for (const r of rows) {
+      pain += Math.max(0, cand.strike - r.strike) * (r.ce?.oi || 0);
+      pain += Math.max(0, r.strike - cand.strike) * (r.pe?.oi || 0);
+    }
+    if (best === null || pain < best.pain) best = { strike: cand.strike, pain };
+  }
+  return { pcr: peOi / ceOi, ceOi, peOi, maxPain: best.strike, from: rows[0].strike, to: rows[rows.length - 1].strike };
+}
+
+function _applyChainStats(data) {
+  const st = computeChainStats(data.rows || []);
+  if (!st) return;
+  const view = st.pcr > 1.2 ? { txt: 'Puts heavy — bullish', c: 'var(--clr-green)' }
+             : st.pcr < 0.8 ? { txt: 'Calls heavy — bearish', c: 'var(--clr-red)' }
+             : { txt: 'Balanced — neutral', c: 'var(--clr-amber)' };
+  const range = `${st.from.toLocaleString('en-IN')}–${st.to.toLocaleString('en-IN')}`;
+  DOM.setText('pcr-val', st.pcr.toFixed(2));
+  DOM.setColor('pcr-val', view.c);
+  DOM.setText('pcr-int', `${view.txt} · strikes ${range}`);
+  DOM.setText('mp-val', st.maxPain.toLocaleString('en-IN'));
+  DOM.setText('mp-note', `${data.underlying} ${data.expiry} · strikes ${range}`);
+  _cardsFromChain = true;
+}
 
 const MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 
@@ -32,6 +71,7 @@ export function runFoAnalysis() {
   let underlying = raw.toUpperCase() || 'NIFTY';
   let expiry = null;
   _highlight = null;
+  _cardsFromChain = false;
   if (contract) {
     underlying = contract.underlying;
     expiry = contract.expiry;
@@ -132,4 +172,5 @@ function _renderOptionChain(data) {
       <tbody>${rowsHtml}</tbody>
     </table>
     </div>`;
+  _applyChainStats(data);
 }

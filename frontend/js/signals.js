@@ -9,6 +9,7 @@ import { NewsFilter, applyNewsSentiment, setNiftyLastNewsSym } from './news.js';
 import { callClaude, extractJson } from './ai.js';
 import { showOv, hideOv } from './app.js';
 import { SIGNAL_TF } from './timeframes.js';
+import { chainCardsActive } from './option-chain.js';
 
 /* ═══════════════════════════════════════════
    MODULE: ALGORITHMIC ENGINE (no API key needed)
@@ -109,7 +110,7 @@ export async function algoFO(prompt) {
     return JSON.stringify({
       pcr: 'N/A', pcr_signal: 'neutral',
       max_pain: 'N/A', max_pain_note: `Spot price unavailable for ${rawSym}.`,
-      iv: 'N/A', iv_state: 'normal', iv_strategy: 'N/A',
+      iv: 'N/A', iv_state: '', iv_strategy: 'Live IV unavailable',
       oi_interpretation: `Could not fetch a live spot price for "${rawSym}" via the free data feed. Try a major index (NIFTY, BANKNIFTY, SENSEX) or an F&O stock by its NSE symbol (e.g. RELIANCE, TCS, HDFCBANK).`,
       greeks: [], oi_levels: [],
       recommendation: `No data available for ${rawSym}.`
@@ -121,17 +122,12 @@ export async function algoFO(prompt) {
   const atm = Math.round(spot / step) * step;
   return JSON.stringify({
     pcr: 'N/A', pcr_signal: (nf.diff >= 0) ? 'bullish' : 'bearish',
-    max_pain: atm.toString(), max_pain_note: `ATM Strike (live calc) — ${rawSym}`,
-    iv: 'Live', iv_state: 'normal', iv_strategy: (nf.diff >= 0) ? 'Bull Spreads' : 'Bear Spreads',
-    oi_interpretation: `Add API key for full OI analysis. Showing ATM approximation for ${rawSym}.`,
-    greeks: [
-      { strike: atm.toString(), type: 'CE', delta: '0.50', gamma: '0.02', theta: '-10', vega: '8', oi_chg: '+2%' },
-      { strike: atm.toString(), type: 'PE', delta: '-0.50', gamma: '0.02', theta: '-10', vega: '8', oi_chg: '+2%' }
-    ],
-    oi_levels: [
-      { strike: (atm + step * 4).toString(), type: 'CE', oi: 'Highest CE', note: 'Resistance' },
-      { strike: (atm - step * 4).toString(), type: 'PE', oi: 'Highest PE', note: 'Support' }
-    ],
+    max_pain: atm.toString(), max_pain_note: `ATM strike estimate, not true max pain — ${rawSym}`,
+    // No live IV/Greeks/OI-level data here — leave them empty rather than show invented numbers.
+    iv: 'N/A', iv_state: '', iv_strategy: 'Live IV unavailable',
+    oi_interpretation: `Spot-based estimate for ${rawSym}. For real open interest, PCR and max pain see the Live Option Chain above.`,
+    greeks: [],
+    oi_levels: [],
     recommendation: (nf.diff >= 0) ? `Bullish setup, ${rawSym} spot ${spot.toFixed(2)}` : `Bearish setup, ${rawSym} spot ${spot.toFixed(2)}`
   });
 }
@@ -673,15 +669,23 @@ Respond ONLY in JSON:
     if (!d) throw new Error('parse');
 
     const pc = d.pcr_signal === 'bullish' ? 'var(--green)' : d.pcr_signal === 'bearish' ? 'var(--down)' : 'var(--warn)';
-    DOM.setText('pcr-val', d.pcr || '--');
-    DOM.setColor('pcr-val', pc);
-    DOM.setText('pcr-int', ((d.pcr_signal || '').toUpperCase()) + ' — ' + (parseFloat(d.pcr || 0) > 1 ? 'Puts heavy, bullish' : 'Calls heavy, bearish'));
-    DOM.setText('mp-val', d.max_pain || '--');
-    DOM.setText('mp-note', d.max_pain_note || '');
+    // Real PCR / max pain from the live option chain take priority over this estimate.
+    if (!chainCardsActive()) {
+      const pcrNum = parseFloat(d.pcr);
+      DOM.setText('pcr-val', d.pcr || '--');
+      DOM.setColor('pcr-val', pc);
+      DOM.setText('pcr-int', isNaN(pcrNum)
+        ? 'Needs the live option chain (Angel One)'
+        : ((d.pcr_signal || '').toUpperCase()) + ' — ' + (pcrNum > 1 ? 'Puts heavy, bullish' : 'Calls heavy, bearish'));
+      DOM.setText('mp-val', d.max_pain || '--');
+      DOM.setText('mp-note', d.max_pain_note || '');
+    }
     DOM.setText('iv-val', d.iv || '--%');
-    DOM.setText('iv-note', ((d.iv_state || '').toUpperCase()) + ' — ' + (d.iv_strategy || ''));
+    DOM.setText('iv-note', [(d.iv_state || '').toUpperCase(), d.iv_strategy || ''].filter(Boolean).join(' — '));
 
-    DOM.setHtml('greeks-tbl', (d.greeks || []).map(g =>
+    DOM.setHtml('greeks-tbl', !(d.greeks || []).length
+      ? '<tr><td colspan="7" class="empty-cell">Live Greeks unavailable (no data from the Greeks feed)</td></tr>'
+      : (d.greeks || []).map(g =>
       `<tr>
         <td style="font-weight:600">${DOM.esc(g.strike)}</td>
         <td>${DOM.esc(g.type)}</td>
