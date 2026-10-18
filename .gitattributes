@@ -1,0 +1,2 @@
+# The deploy script runs on Linux: never convert it to Windows (CRLF) line endings.
+*.sh text eol=lf
