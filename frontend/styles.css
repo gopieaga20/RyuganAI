@@ -35,6 +35,18 @@
   --clr-amber-muted: rgba(212, 146, 26, 0.12);
   --clr-purple: #7c5dcc;
 
+  /* Short names used throughout the JS/HTML (e.g. var(--green) for profit). They were never defined,
+     so profit/loss and many status colours silently fell back to the default text colour. */
+  --green: var(--clr-green);
+  --down: var(--clr-red);
+  --warn: var(--clr-amber);
+  --blue: var(--clr-blue);
+  --text: var(--clr-text);
+  --text2: var(--clr-text-2);
+  --text3: var(--clr-text-3);
+  --border: var(--clr-border-2);
+  --surface: var(--clr-bg);
+
   --font-display: 'Syne', sans-serif;
   --font-body: 'DM Sans', sans-serif;
   --font-mono: 'DM Mono', monospace;

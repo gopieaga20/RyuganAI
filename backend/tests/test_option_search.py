@@ -76,6 +76,15 @@ def test_option_symbol_regex_and_price_symbol_passthrough(sym):
 
 
 @pytest.mark.parametrize("sym", ["RELIANCE", "TCS", "NIFTY", "SBIN"])
-def test_plain_stocks_are_not_option_symbols(sym):
+def test_plain_names_are_not_option_symbols(sym):
     assert not _OPTION_SYMBOL_RE.match(sym)
+
+
+@pytest.mark.parametrize("sym", ["RELIANCE", "TCS", "SBIN"])
+def test_plain_stocks_get_the_ns_suffix(sym):
     assert _to_price_symbol(sym) == sym + ".NS"
+
+
+def test_bare_nifty_is_an_index_not_a_stock():
+    # "NIFTY.NS" is not a real ticker; the index must resolve to ^NSEI.
+    assert _to_price_symbol("NIFTY") == "^NSEI"

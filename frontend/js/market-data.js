@@ -208,6 +208,9 @@ export const _SYM_MAP = {
   'BAJAJ FINANCE': 'BAJFINANCE.NS', 'SBIN': 'SBIN.NS',
   'BHARTIARTL': 'BHARTIARTL.NS', 'ITC': 'ITC.NS', 'LT': 'LT.NS',
   'AXISBANK': 'AXISBANK.NS', 'KOTAKBANK': 'KOTAKBANK.NS',
+  // Bare index names as they appear in the F&O underlying list. Angel prices MIDCPNIFTY / NIFTYNXT50
+  // directly; Yahoo has no equivalent, so those only price while the Angel session is up.
+  'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK', 'MIDCPNIFTY': 'MIDCPNIFTY', 'NIFTYNXT50': 'NIFTYNXT50',
 };
 
 export function _toYahooSym(name) {
@@ -215,5 +218,7 @@ export function _toYahooSym(name) {
   if (n.match(/^(NIFTY|BANKNIFTY)\s+(\d{1,2}\s+[A-Z]{3})\s+(\d+)\s+(CE|PE)$/i)) return n;
   // Real contract trading symbol, e.g. NIFTY27OCT2623100CE
   if (/^[A-Z0-9][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$/.test(n)) return n;
-  return _SYM_MAP[n] || (n.endsWith('.NS') ? n : n + '.NS');
+  if (_SYM_MAP[n]) return _SYM_MAP[n];
+  if (n.startsWith('^') || n.includes('=') || n.endsWith('.NS')) return n;
+  return n.replace(/\s+/g, '') + '.NS';   // "TATA STEEL" -> TATASTEEL.NS
 }

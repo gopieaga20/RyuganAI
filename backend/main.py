@@ -16,6 +16,7 @@ import datetime
 import time
 import json
 import re
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
 from typing import Optional, Any
@@ -100,6 +101,23 @@ def compute_pnl(pos_type: str, entry_price: float, exit_price: float, qty: int) 
     return round((float(entry_price) - float(exit_price)) * int(qty), 2)
 
 
+def validate_sl_tp(pos_type: str, entry: float, sl: float, tp: float) -> Optional[str]:
+    """Return an error message if the stop-loss/target are on the wrong side of the entry price, else None.
+    LONG: sl < entry < tp.   SHORT: tp < entry < sl.
+    A wrong-side level is breached by the very next price tick, so the trade would close immediately."""
+    if pos_type == "LONG":
+        if sl >= entry:
+            return f"Invalid stop-loss for a LONG: it must be below the entry price ({entry:.2f}), but you gave {sl:.2f}."
+        if tp <= entry:
+            return f"Invalid target for a LONG: it must be above the entry price ({entry:.2f}), but you gave {tp:.2f}."
+    else:
+        if sl <= entry:
+            return f"Invalid stop-loss for a SHORT: it must be above the entry price ({entry:.2f}), but you gave {sl:.2f}."
+        if tp >= entry:
+            return f"Invalid target for a SHORT: it must be below the entry price ({entry:.2f}), but you gave {tp:.2f}."
+    return None
+
+
 def sl_tp_breached(pos_type: str, ltp: float, sl: float, tp: float) -> Optional[str]:
     """Return 'SL Hit' / 'Target Hit' if ltp breaches the position's stop-loss/target, else None."""
     if pos_type == "LONG":
@@ -155,9 +173,11 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
 # LIVE PRICE LOOKUP — shared by the SL/TP watcher
 # ─────────────────────────────────────────────
 _SYMBOL_ALIASES = {
-    "NIFTY 50": "^NSEI",
-    "BANK NIFTY": "^NSEBANK",
+    "NIFTY 50": "^NSEI", "NIFTY": "^NSEI",
+    "BANK NIFTY": "^NSEBANK", "BANKNIFTY": "^NSEBANK",
     "SENSEX": "^BSESN",
+    # Angel prices these bare index names directly; Yahoo has no equivalent.
+    "FINNIFTY": "FINNIFTY", "MIDCPNIFTY": "MIDCPNIFTY", "NIFTYNXT50": "NIFTYNXT50",
 }
 
 
@@ -167,11 +187,12 @@ _OPTION_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9&-]*\d{2}[A-Z]{3}\d{2}\d+(CE|PE
 
 def _to_price_symbol(symbol: str) -> str:
     """Map a position's stored symbol to a Yahoo/Angel-lookup-friendly symbol."""
+    symbol = symbol.upper()
     if symbol in _SYMBOL_ALIASES:
         return _SYMBOL_ALIASES[symbol]
-    if "^" in symbol or symbol.endswith(".NS") or _OPTION_SYMBOL_RE.match(symbol):
+    if "^" in symbol or "=" in symbol or symbol.endswith(".NS") or _OPTION_SYMBOL_RE.match(symbol):
         return symbol
-    return symbol + ".NS"
+    return symbol.replace(" ", "") + ".NS"
 
 
 async def _fetch_ltp(symbol: str) -> Optional[float]:
@@ -188,7 +209,7 @@ async def _fetch_ltp(symbol: str) -> Optional[float]:
     try:
         url = (
             f"https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{price_sym}?interval=1m&range=1d&includePrePost=false"
+            f"{quote(price_sym, safe='^=')}?interval=1m&range=1d&includePrePost=false"
         )
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -213,7 +234,7 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
             async with pool.acquire() as conn:
                 positions = await conn.fetch("SELECT * FROM positions")
             for pos in positions:
-                ltp = await _fetch_ltp(pos["symbol"])
+                ltp = await _fetch_ltp(pos["price_symbol"] or pos["symbol"])
                 if ltp is None:
                     continue
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
@@ -280,6 +301,7 @@ async def _ensure_schema(pool: asyncpg.Pool):
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'MIS'",
             "ALTER TABLE history   ADD COLUMN IF NOT EXISTS charges NUMERIC(10,2) NOT NULL DEFAULT 0.00",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS price_symbol TEXT",
         ]:
             await conn.execute(stmt)
         # Seed default portfolio row
@@ -345,6 +367,9 @@ class TradeRequest(BaseModel):
     tp: float = Field(..., gt=0)
     order_type: str = Field(default="MARKET", max_length=10)
     product: str = Field(default="MIS", max_length=10)
+    # Price-feed symbol resolved by the UI at order time (e.g. ^NSEI, HDFCBANK.NS, NIFTY27OCT2623100CE).
+    # Stored with the position so the SL/TP watcher prices it exactly as the screen does.
+    price_symbol: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9^=.&_-]{1,60}$")
 
 class ExitRequest(BaseModel):
     id: int = Field(..., gt=0)
@@ -397,6 +422,9 @@ async def get_history(request: Request):
 @app.post("/api/paper/trade")
 async def execute_trade(req: TradeRequest, request: Request):
     pool = _get_pool(request)
+    problem = validate_sl_tp(req.type.upper(), req.entry_price, req.sl, req.tp)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
     margin_req = compute_margin(req.qty, req.entry_price)
 
     async with pool.acquire() as conn:
@@ -414,12 +442,13 @@ async def execute_trade(req: TradeRequest, request: Request):
                 margin_req
             )
             row = await conn.fetchrow(
-                """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                    RETURNING id""",
                 req.symbol.upper(), req.type.upper(), req.qty,
                 req.entry_price, req.sl, req.tp,
-                datetime.datetime.now(datetime.timezone.utc)
+                datetime.datetime.now(datetime.timezone.utc),
+                req.price_symbol
             )
     return {"status": "success", "id": row["id"], "margin_used": margin_req}
 
@@ -456,6 +485,9 @@ async def modify_position(position_id: int, req: ModifyPositionRequest, request:
             raise HTTPException(status_code=404, detail="Position not found")
         new_sl = req.sl if req.sl is not None else float(pos["sl"])
         new_tp = req.tp if req.tp is not None else float(pos["tp"])
+        problem = validate_sl_tp(pos["type"], float(pos["entry_price"]), new_sl, new_tp)
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
         await conn.execute(
             "UPDATE positions SET sl = $1, tp = $2 WHERE id = $3",
             new_sl, new_tp, position_id
@@ -574,186 +606,50 @@ async def ai_chat(req: AiChatRequest):
 _WS_PUSH_SECONDS = 5
 _WS_MAX_SYMBOLS = 30
 
+def _parse_ws_symbols(msg) -> Optional[list]:
+    """Pull a clean symbol list out of a {"symbols": [...]} message, or None if it isn't one."""
+    symbols = msg.get("symbols") if isinstance(msg, dict) else None
+    if not isinstance(symbols, list) or not symbols:
+        return None
+    return [str(s)[:50] for s in symbols][:_WS_MAX_SYMBOLS]
+
+
 @app.websocket("/ws/prices")
 async def ws_prices(websocket: WebSocket):
     await websocket.accept()
+    reader = None
     try:
-        init = await websocket.receive_json()
-        symbols = init.get("symbols") if isinstance(init, dict) else None
-        if not isinstance(symbols, list) or not symbols:
+        symbols = _parse_ws_symbols(await websocket.receive_json())
+        if not symbols:
             await websocket.close(code=1008)
             return
-        symbols = [str(s)[:50] for s in symbols][:_WS_MAX_SYMBOLS]
 
-        while True:
-            prices = {}
-            for sym in symbols:
-                ltp = await _fetch_ltp(sym)
-                if ltp is not None:
-                    prices[sym] = ltp
+        # The page sends a new {"symbols": [...]} whenever positions change; keep listening for those.
+        async def listen_for_updates():
+            while True:
+                new = _parse_ws_symbols(await websocket.receive_json())
+                if new:
+                    symbols[:] = new
+        reader = asyncio.create_task(listen_for_updates())
+
+        sem = asyncio.Semaphore(4)
+
+        async def price_of(sym):
+            async with sem:
+                return sym, await _fetch_ltp(sym)
+
+        while not reader.done():  # the reader ends when the client disconnects
+            results = await asyncio.gather(*(price_of(s) for s in list(symbols)))
+            prices = {sym: ltp for sym, ltp in results if ltp is not None}
             await websocket.send_json({"prices": prices, "ts": time.time()})
             await asyncio.sleep(_WS_PUSH_SECONDS)
     except WebSocketDisconnect:
         pass
     except Exception as e:
         print(f"[WARN] ws_prices error: {e}")
-
-
-# ─────────────────────────────────────────────
-# SYMBOL UNIVERSE — full NSE stock list + F&O underlyings
-# ─────────────────────────────────────────────
-
-@app.get("/api/stocks")
-async def list_stocks():
-    """Full NSE cash-market equity list (~2700 symbols), from Angel's public
-    scrip master — no broker session/API key required for this endpoint."""
-    equities = await asyncio.to_thread(get_nse_equities)
-    if not equities:
-        raise HTTPException(status_code=503, detail="Stock list unavailable (scrip master failed to load).")
-    return {"stocks": equities, "count": len(equities)}
-
-
-_fo_underlyings_cache: dict = {}
-_FO_UNDERLYINGS_TTL = 24 * 60 * 60  # 24h — this list changes rarely
-
-@app.get("/api/fo/underlyings")
-async def list_fo_underlyings():
-    """Full list of F&O underlyings (indices + ~211 stocks) from NSE."""
-    now = time.time()
-    if _fo_underlyings_cache.get("fetched_at") and now - _fo_underlyings_cache["fetched_at"] < _FO_UNDERLYINGS_TTL:
-        return {"underlyings": _fo_underlyings_cache["data"], "cached": True}
-    data = await get_fo_underlyings()
-    _fo_underlyings_cache["data"] = data
-    _fo_underlyings_cache["fetched_at"] = now
-    return {"underlyings": data, "cached": False}
-
-
-@app.get("/api/lot-sizes")
-async def lot_sizes():
-    """Current lot size for every F&O underlying, read from Angel's contract list (not hardcoded)."""
-    sizes = await asyncio.to_thread(get_lot_sizes)
-    if not sizes:
-        raise HTTPException(status_code=503, detail="Lot sizes unavailable (contract list failed to load).")
-    return {"lot_sizes": sizes, "count": len(sizes)}
-
-
-@app.get("/api/options/search")
-async def search_options(q: str, limit: int = 40):
-    """Real, unexpired option contracts matching free text like "NIFTY 23100" or "reliance 1260 ce".
-    Powers the symbol-box suggestions. Needs a strike in the query; returns [] otherwise.
-    Uses only Angel's public scrip master, so no broker login is required."""
-    limit = max(1, min(100, limit))
-    results = await asyncio.to_thread(search_option_contracts, q, limit)
-    return {"contracts": results, "count": len(results)}
-
-
-def _parse_angel_expiry(s: str) -> datetime.datetime:
-    """Parse Angel's 'DDMMMYYYY' expiry strings (e.g. '29SEP2026') for sorting."""
-    try:
-        return datetime.datetime.strptime(s, "%d%b%Y")
-    except Exception:
-        return datetime.datetime.max
-
-
-@app.get("/api/fo/option-chain")
-async def get_option_chain(underlying: str, expiry: Optional[str] = None, strikes: int = 10,
-                           center: Optional[float] = None):
-    """Real option chain (LTP, OI, % change) for an F&O underlying, from Angel One.
-    `strikes` = how many strikes to include on each side of the window centre, which is the
-    ATM strike by default or `center` (e.g. a specific contract's strike) when given."""
-    client = await asyncio.to_thread(get_angel_client)
-    if not client:
-        raise HTTPException(
-            status_code=503,
-            detail="Angel One session unavailable — check ANGEL_* credentials in backend/.env."
-        )
-    await asyncio.to_thread(load_master_contract)
-
-    key = underlying.strip().upper()
-    contracts = get_option_contracts(key)
-    if not contracts:
-        raise HTTPException(status_code=404, detail=f"No F&O contracts found for '{underlying}'.")
-
-    all_expiries = sorted({c["expiry"] for c in contracts}, key=_parse_angel_expiry)
-    if expiry:
-        if expiry not in all_expiries:
-            raise HTTPException(status_code=400, detail=f"Unknown expiry '{expiry}' for {underlying}.")
-        chosen_expiry = expiry
-    else:
-        today = datetime.datetime.now()
-        future = [e for e in all_expiries if _parse_angel_expiry(e) >= today]
-        chosen_expiry = future[0] if future else all_expiries[0]
-
-    exp_contracts = [c for c in contracts if c["expiry"] == chosen_expiry]
-    strike_vals = sorted({c["strike"] for c in exp_contracts})
-
-    # Spot price, to center the strike window on the ATM strike.
-    spot = None
-    spot_info = _angel_broker._master_lookup.get(key) or _angel_broker._master_lookup.get(key + "-EQ")
-    if spot_info:
-        try:
-            res = await asyncio.to_thread(
-                client.getMarketData, mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
-            fetched = (res or {}).get("data", {}).get("fetched") or []
-            if fetched:
-                spot = float(fetched[0]["ltp"])
-        except Exception as e:
-            print(f"[WARN] option-chain spot lookup failed for {key}: {e}")
-
-    if center is not None:
-        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - center))
-    elif spot:
-        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - spot))
-    else:
-        atm_idx = len(strike_vals) // 2
-    lo = max(0, atm_idx - strikes)
-    hi = min(len(strike_vals), atm_idx + strikes + 1)
-    selected_strikes = strike_vals[lo:hi]
-
-    by_strike: dict = {}
-    for c in exp_contracts:
-        if c["strike"] in selected_strikes:
-            by_strike.setdefault(c["strike"], {})[c["type"]] = c
-
-    tokens = [c["token"] for row in by_strike.values() for c in row.values()]
-    quotes: dict = {}
-    for i in range(0, len(tokens), 50):  # Angel caps tokens per request
-        batch = tokens[i:i + 50]
-        try:
-            res = await asyncio.to_thread(client.getMarketData, mode="FULL", exchangeTokens={"NFO": batch})
-            for item in (res or {}).get("data", {}).get("fetched") or []:
-                quotes[item["symbolToken"]] = item
-        except Exception as e:
-            print(f"[WARN] option-chain quote batch failed: {e}")
-
-    def _row(c):
-        q = quotes.get(c["token"])
-        if not q:
-            return None
-        return {
-            "symbol": c["symbol"],
-            "ltp": q.get("ltp"),
-            "change_pct": q.get("percentChange"),
-            "oi": q.get("opnInterest"),
-            "volume": q.get("tradeVolume"),
-        }
-
-    rows = []
-    for strike in selected_strikes:
-        pair = by_strike.get(strike, {})
-        rows.append({
-            "strike": strike,
-            "ce": _row(pair["CE"]) if "CE" in pair else None,
-            "pe": _row(pair["PE"]) if "PE" in pair else None,
-        })
-
-    return {
-        "underlying": key,
-        "spot": spot,
-        "expiry": chosen_expiry,
-        "expiries": all_expiries[:12],
-        "rows": rows,
-    }
+    finally:
+        if reader:
+            reader.cancel()
 
 
 # ─────────────────────────────────────────────

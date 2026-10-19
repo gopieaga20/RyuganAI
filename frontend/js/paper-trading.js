@@ -99,7 +99,8 @@ export async function executeVirtualTrade(symbol, type, qty, entry, sl, tp) {
     qty: parseInt(qty),
     entry_price: parseFloat(entry),
     sl: parseFloat(sl),
-    tp: parseFloat(tp)
+    tp: parseFloat(tp),
+    price_symbol: _toYahooSym(symbol)
   };
   if (!req.qty || !req.entry_price) { alert('Invalid trade parameters'); return; }
 
@@ -120,8 +121,9 @@ export async function executeVirtualTrade(symbol, type, qty, entry, sl, tp) {
 export async function executeCurrentSignal() {
   await loadLotSizes();
   const sym = document.getElementById('sh-sym-label')?.textContent || 'NIFTY 50';
-  const isBuy = !!document.querySelector('.badge-buy');
-  const isSell = !!document.querySelector('.badge-sell');
+  const badge = document.getElementById('nifty-signal-badge');  // other tabs reuse .badge-buy, so don't search the whole page
+  const isBuy = !!badge?.querySelector('.badge-buy');
+  const isSell = !!badge?.querySelector('.badge-sell');
   if (!isBuy && !isSell) { alert('No active BUY or SELL signal'); return; }
   const sig = isBuy ? 'LONG' : 'SHORT';
   const entry = document.getElementById('nl-entry')?.textContent;
@@ -144,15 +146,24 @@ export async function executePaperTrade(symbol, signal, entry, sl, tp) {
   executeVirtualTrade(symbol, signal, qty, entry, sl, tp);
 }
 
+const _exiting = new Set();  // the 5s poll and the live feed can both spot the same breach
+
 export async function squareOffPosition(id, explicitPrice = null, reason = 'Manual Square Off') {
   const pos = State.ptPositions.find(p => p.id === id);
-  if (!pos) return;
-  let exitPrice = explicitPrice;
-  if (exitPrice === null) {
-    const el = document.getElementById(`pt-ltp-${id}`);
-    exitPrice = (el && el.textContent !== '--') ? parseFloat(el.textContent) : pos.entry_price;
-  }
+  if (!pos || _exiting.has(id)) return;
+  _exiting.add(id);
   try {
+    let exitPrice = explicitPrice;
+    if (exitPrice === null) {
+      const el = document.getElementById(`pt-ltp-${id}`);
+      exitPrice = (el && el.textContent !== '--') ? parseFloat(el.textContent) : NaN;
+      if (isNaN(exitPrice)) exitPrice = (await getPrice(_posToLiveSymbol(pos)))?.c ?? NaN;   // try a fresh price
+      if (isNaN(exitPrice)) {
+        const msg = `A live price for ${pos.symbol} is not available right now. Exit at the entry price (\u20b9${pos.entry_price.toFixed(2)}, zero profit/loss)?`;
+        if (!confirm(msg)) return;
+        exitPrice = pos.entry_price;
+      }
+    }
     const res = await fetch(CONFIG.PROXY_BASE + '/api/paper/exit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -160,6 +171,7 @@ export async function squareOffPosition(id, explicitPrice = null, reason = 'Manu
     });
     if (res.ok) refreshPaperTrading();
   } catch (e) { console.error('Square off failed:', e); }
+  finally { _exiting.delete(id); }
 }
 
 export async function resetPaperTrading() {
@@ -170,19 +182,18 @@ export async function resetPaperTrading() {
   } catch { alert('Reset failed'); }
 }
 
+// The price-feed symbol is decided once, when the order is placed (same resolver as the entry price),
+// and saved with the position. Older positions without one are resolved the same way on the fly.
 function _posToLiveSymbol(pos) {
-  let sym = pos.symbol;
-  if (sym === 'NIFTY 50') sym = '^NSEI';
-  if (sym === 'BANK NIFTY') sym = '^NSEBANK';
-  if (sym === 'SENSEX') sym = '^BSESN';
-  if (!sym.includes('^')) sym += '.NS';
-  return sym;
+  return pos.price_symbol || _toYahooSym(pos.symbol);
 }
 
 /** Update one position's LTP/PnL cells for a fresh price, and auto-exit on SL/TP breach.
  * Returns the unrealized PnL for this position (used to roll up the total). */
 function _applyLtpToPosition(pos, ltp) {
   const upnl = pos.type === 'LONG' ? (ltp - pos.entry_price) * pos.qty : (pos.entry_price - ltp) * pos.qty;
+  _upnlById.set(pos.id, upnl);
+  _renderTotalUnrealized();   // keep the card in step with every row, not just at the end of a batch
 
   DOM.setText(`pt-ltp-${pos.id}`, ltp.toFixed(2));
   const pnlEl = document.getElementById(`pt-pnl-${pos.id}`);
@@ -201,7 +212,16 @@ function _applyLtpToPosition(pos, ltp) {
   return upnl;
 }
 
-function _renderTotalUnrealized(total) {
+// Latest unrealized P&L per open position. Both the 5s poll and the live feed write here, and the total
+// is always summed over every open position, so a push that only covers some symbols can't show a partial total.
+const _upnlById = new Map();
+
+function _renderTotalUnrealized() {
+  const open = new Set(State.ptPositions.map(p => p.id));
+  let total = 0;
+  for (const [id, v] of _upnlById) {
+    if (open.has(id)) total += v; else _upnlById.delete(id);
+  }
   const tuEl = document.getElementById('pt-unrealized');
   if (tuEl) {
     tuEl.textContent = '₹' + total.toFixed(2);
@@ -209,22 +229,22 @@ function _renderTotalUnrealized(total) {
   }
 }
 
-// Fallback poller (fires every 5s regardless of WebSocket state — see _subscribeWsForPositions
-// below for the faster push-based path, which this keeps working underneath as a safety net).
+// Fallback poller (every 5s regardless of the live feed). Prices are fetched in parallel, and a new run
+// doesn't start while the previous one is still going, so slow lookups can't pile up.
+let _loopRunning = false;
 export async function paperTradingLoop() {
-  if (!State.ptPositions.length) return;
-  let totalUnrealized = 0;
-  for (const pos of State.ptPositions) {
-    const sym = _posToLiveSymbol(pos);
-    try {
-      const j = await yahooFetch(sym, '1m', '1d');
-      if (!j) continue;
-      const ltp = j.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (!ltp) continue;
-      totalUnrealized += _applyLtpToPosition(pos, ltp);
-    } catch { /* skip */ }
-  }
-  _renderTotalUnrealized(totalUnrealized);
+  if (!State.ptPositions.length || _loopRunning) return;
+  _loopRunning = true;
+  try {
+    await Promise.all(State.ptPositions.map(async pos => {
+      try {
+        const j = await yahooFetch(_posToLiveSymbol(pos), '1m', '1d');
+        const ltp = j?.chart?.result?.[0]?.meta?.regularMarketPrice;
+        if (ltp) _applyLtpToPosition(pos, ltp);
+      } catch { /* skip this position this round */ }
+    }));
+    _renderTotalUnrealized();
+  } finally { _loopRunning = false; }
 }
 
 // Faster push-based path: subscribes the currently open positions' symbols to
@@ -238,15 +258,11 @@ function _subscribeWsForPositions() {
 
   const symbols = [...new Set(State.ptPositions.map(_posToLiveSymbol))];
   _unsubscribeWs = subscribeLivePrices(symbols, (prices) => {
-    let total = 0;
-    let sawAny = false;
     for (const pos of State.ptPositions) {
       const ltp = prices[_posToLiveSymbol(pos)];
-      if (ltp == null) continue;
-      sawAny = true;
-      total += _applyLtpToPosition(pos, ltp);
+      if (ltp != null) _applyLtpToPosition(pos, ltp);
     }
-    if (sawAny) _renderTotalUnrealized(total);
+    _renderTotalUnrealized();
   });
 }
 
@@ -296,14 +312,17 @@ export function ptAutoFillSignal() {
   const entry = document.getElementById('nl-entry')?.textContent?.replace(/,/g, '');
   const sl = document.getElementById('nl-sl')?.textContent?.replace(/,/g, '');
   const t1 = document.getElementById('nl-t1')?.textContent?.replace(/,/g, '');
-  const isBuy = !!document.querySelector('.badge-buy') || !!document.querySelector('.sp-buy');
+  const badge = document.getElementById('nifty-signal-badge');  // other tabs reuse .badge-buy, so don't search the whole page
+  const isBuy = !!badge?.querySelector('.badge-buy');
+  const isSell = !!badge?.querySelector('.badge-sell');
   if (document.getElementById('pt-sym')) document.getElementById('pt-sym').value = sym;
   if (entry && entry !== '--' && document.getElementById('pt-price')) document.getElementById('pt-price').value = entry;
   if (sl && sl !== '--' && document.getElementById('pt-sl-input')) document.getElementById('pt-sl-input').value = sl;
   if (t1 && t1 !== '--' && document.getElementById('pt-target-input')) document.getElementById('pt-target-input').value = t1;
-  ptSetDir(isBuy ? 'LONG' : 'SHORT');
+  if (isBuy || isSell) ptSetDir(isBuy ? 'LONG' : 'SHORT');
   const status = document.getElementById('pt-order-status');
-  if (status) { status.textContent = '\u2713 Signal loaded'; status.style.color = 'var(--clr-green)'; }
+  if (status && (isBuy || isSell)) { status.textContent = '\u2713 Signal loaded'; status.style.color = 'var(--clr-green)'; }
+  else if (status) { status.textContent = '\u26a0 No active BUY/SELL signal \u2014 levels loaded, pick the direction yourself'; status.style.color = 'var(--clr-red)'; }
 }
 
 export async function ptPlaceOrder() {
@@ -334,7 +353,8 @@ export async function ptPlaceOrder() {
 
   const body = {
     symbol: sym, type: _ptDir, qty, entry_price: entryPrice,
-    sl: slVal, tp: tpVal, order_type: ot, product
+    sl: slVal, tp: tpVal, order_type: ot, product,
+    price_symbol: _toYahooSym(sym)
   };
 
   setStatus('Placing order...', 'var(--clr-text-3)');

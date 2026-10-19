@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS positions (
     tp          NUMERIC(12, 2) NOT NULL,
     order_type  TEXT        NOT NULL DEFAULT 'MARKET',
     product     TEXT        NOT NULL DEFAULT 'MIS',
+    price_symbol TEXT,
     entry_time  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
