@@ -62,3 +62,30 @@ def test_a_trade_the_validator_rejects_would_have_closed_immediately():
 ])
 def test_price_symbol_resolution(stored, expected):
     assert _to_price_symbol(stored) == expected
+
+
+# ── margin, pending orders, charges ──
+from main import required_margin, order_fills, compute_margin, PAPER_LEVERAGE
+
+
+def test_bought_option_costs_full_premium():
+    assert required_margin("NIFTY27OCT2623100CE", "LONG", 65, 100) == 6500
+
+
+def test_other_positions_are_leveraged():
+    assert required_margin("NIFTY 50", "LONG", 65, 22860) == round(65 * 22860 / PAPER_LEVERAGE, 2)
+    assert required_margin("NIFTY27OCT2623100CE", "SHORT", 65, 100) == round(6500 / PAPER_LEVERAGE, 2)
+
+
+def test_one_nifty_lot_fits_the_default_account():
+    assert required_margin("NIFTY 50", "LONG", 65, 22860) < 1_000_000
+
+
+@pytest.mark.parametrize("otype,side,price,ltp,fills", [
+    ("LIMIT", "LONG", 100, 99, True), ("LIMIT", "LONG", 100, 101, False),
+    ("LIMIT", "SHORT", 100, 101, True), ("LIMIT", "SHORT", 100, 99, False),
+    ("SL", "LONG", 100, 101, True), ("SL", "LONG", 100, 99, False),
+    ("SL-M", "SHORT", 100, 99, True), ("SL-M", "SHORT", 100, 101, False),
+])
+def test_pending_order_triggers(otype, side, price, ltp, fills):
+    assert order_fills(otype, side, price, ltp) is fills

@@ -94,6 +94,28 @@ def compute_margin(qty: int, price: float) -> float:
     return round(float(qty) * float(price), 2)
 
 
+# Paper-account margin: bought options cost their full premium; everything else (futures-like index
+# positions, stocks, short options) is leveraged. 5x by default, like intraday margins.
+PAPER_LEVERAGE = max(1.0, float(os.getenv("PAPER_LEVERAGE", "5")))
+CHARGE_PER_LEG = 20.0          # flat brokerage per order leg (entry and exit)
+
+
+def required_margin(symbol: str, pos_type: str, qty: int, price: float) -> float:
+    """Margin blocked for a position. Long option buyers pay the whole premium; others get leverage."""
+    notional = compute_margin(qty, price)
+    if pos_type == "LONG" and _OPTION_SYMBOL_RE.match(symbol.upper()):
+        return notional
+    return round(notional / PAPER_LEVERAGE, 2)
+
+
+def order_fills(order_type: str, pos_type: str, price: float, ltp: float) -> bool:
+    """Whether a pending LIMIT / SL / SL-M order at `price` is executable at market price `ltp`.
+    LIMIT buys at or below, sells at or above. Stop orders trigger on the way up for buys, down for sells."""
+    if order_type == "LIMIT":
+        return ltp <= price if pos_type == "LONG" else ltp >= price
+    return ltp >= price if pos_type == "LONG" else ltp <= price
+
+
 def compute_pnl(pos_type: str, entry_price: float, exit_price: float, qty: int) -> float:
     """Realized PnL for closing a LONG/SHORT position."""
     if pos_type == "LONG":
@@ -135,7 +157,7 @@ def sl_tp_breached(pos_type: str, ltp: float, sl: float, tp: float) -> Optional[
 
 async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: float, reason: str) -> Optional[float]:
     """Close an open position at exit_price: release margin, book PnL, record history.
-    Returns the realized PnL, or None if the position no longer exists (already closed)."""
+    Returns the gross PnL (before the ₹20 exit charge), or None if the position no longer exists (already closed)."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             pos = await conn.fetchrow(
@@ -144,7 +166,7 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
             if not pos:
                 return None
 
-            margin_release = compute_margin(int(pos["qty"]), float(pos["entry_price"]))
+            margin_release = float(pos["margin"]) if pos["margin"] is not None                 else compute_margin(int(pos["qty"]), float(pos["entry_price"]))
             pnl = compute_pnl(pos["type"], float(pos["entry_price"]), exit_price, int(pos["qty"]))
 
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -155,10 +177,10 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
                        capital     = capital + $2,
                        total_pnl   = total_pnl + $3
                    WHERE id = 1""",
-                margin_release, pnl, pnl
+                margin_release, pnl - CHARGE_PER_LEG, pnl - CHARGE_PER_LEG
             )
-            # Simulate brokerage: ₹20 flat per leg (entry already charged), here exit
-            charges = 20.0
+            # Brokerage is ₹20 per leg: the entry leg was taken when the position opened, this is the exit leg.
+            charges = CHARGE_PER_LEG * 2
             await conn.execute(
                 """INSERT INTO history
                    (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time)
@@ -240,11 +262,63 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
                 if reason:
                     await _close_position(pool, pos["id"], ltp, reason)
+            await _fill_pending_orders(pool)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print(f"[WARN] SL/TP watcher error: {e}")
         await asyncio.sleep(_SL_TP_POLL_SECONDS)
+
+
+async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type, product, price_symbol) -> tuple:
+    """Block margin, take the entry charge and insert the position. Caller holds a transaction.
+    Returns (position id, margin). Raises HTTPException(400) if funds are short."""
+    margin = required_margin(symbol, pos_type, qty, price)
+    port = await conn.fetchrow("SELECT * FROM portfolio WHERE id = 1 FOR UPDATE")
+    available = float(port["capital"]) - float(port["used_margin"])
+    if available < margin + CHARGE_PER_LEG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient margin. Available: ₹{available:,.2f}, Required: ₹{margin + CHARGE_PER_LEG:,.2f}"
+        )
+    await conn.execute(
+        """UPDATE portfolio SET used_margin = used_margin + $1,
+                  capital = capital - $2, total_pnl = total_pnl - $2 WHERE id = 1""",
+        margin, CHARGE_PER_LEG
+    )
+    row = await conn.fetchrow(
+        """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol, order_type, product, margin)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
+        symbol, pos_type, qty, price, sl, tp, datetime.datetime.now(datetime.timezone.utc),
+        price_symbol, order_type, product, margin
+    )
+    return row["id"], margin
+
+
+async def _fill_pending_orders(pool: asyncpg.Pool):
+    """Turn pending LIMIT/SL orders into positions once the market reaches their price."""
+    async with pool.acquire() as conn:
+        orders = await conn.fetch("SELECT * FROM orders ORDER BY id")
+    for o in orders:
+        ltp = await _fetch_ltp(o["price_symbol"] or o["symbol"])
+        if ltp is None or not order_fills(o["order_type"], o["type"], float(o["price"]), ltp):
+            continue
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    gone = await conn.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING id", o["id"])
+                    if not gone:
+                        continue                      # cancelled or filled meanwhile
+                    problem = validate_sl_tp(o["type"], ltp, float(o["sl"]), float(o["tp"]))
+                    if problem:
+                        print(f"[WARN] Pending order #{o['id']} cancelled at fill: {problem}")
+                        continue
+                    await _open_position(conn, o["symbol"], o["type"], int(o["qty"]), ltp,
+                                         float(o["sl"]), float(o["tp"]), o["order_type"], o["product"], o["price_symbol"])
+        except HTTPException as e:
+            print(f"[WARN] Pending order #{o['id']} dropped: {e.detail}")   # the failed transaction rolled the delete back; drop the order for good
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM orders WHERE id = $1", o["id"])
 
 
 async def _ensure_schema(pool: asyncpg.Pool):
@@ -296,12 +370,28 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id           SERIAL PRIMARY KEY,
+                symbol       TEXT NOT NULL,
+                type         TEXT NOT NULL CHECK (type IN ('LONG', 'SHORT')),
+                qty          INTEGER NOT NULL CHECK (qty > 0),
+                price        NUMERIC(12, 2) NOT NULL,
+                sl           NUMERIC(12, 2) NOT NULL,
+                tp           NUMERIC(12, 2) NOT NULL,
+                order_type   TEXT NOT NULL,
+                product      TEXT NOT NULL DEFAULT 'MIS',
+                price_symbol TEXT,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
         # Safe migration: add new columns if they don't exist on old tables
         for stmt in [
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'MIS'",
             "ALTER TABLE history   ADD COLUMN IF NOT EXISTS charges NUMERIC(10,2) NOT NULL DEFAULT 0.00",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS price_symbol TEXT",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS margin NUMERIC(14,2)",
         ]:
             await conn.execute(stmt)
         # Seed default portfolio row
@@ -422,35 +512,61 @@ async def get_history(request: Request):
 @app.post("/api/paper/trade")
 async def execute_trade(req: TradeRequest, request: Request):
     pool = _get_pool(request)
-    problem = validate_sl_tp(req.type.upper(), req.entry_price, req.sl, req.tp)
+    pos_type = req.type.upper()
+    order_type = req.order_type.upper()
+    symbol = req.symbol.upper()
+    price = req.entry_price
+    pending = False
+
+    if order_type in ("LIMIT", "SL", "SL-M"):
+        # `entry_price` is the limit price (LIMIT) or the trigger price (SL / SL-M).
+        ltp = await _fetch_ltp(req.price_symbol or symbol)
+        if ltp is None:
+            raise HTTPException(status_code=400, detail="No live price available, so a LIMIT/SL order cannot be placed now.")
+        if order_fills(order_type, pos_type, price, ltp):
+            if order_type == "LIMIT":
+                price = ltp                    # marketable limit: fills at the better market price
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Trigger {price:.2f} is already {'below' if pos_type == 'LONG' else 'above'} the market ({ltp:.2f}); "
+                           f"a {pos_type} stop must trigger {'above' if pos_type == 'LONG' else 'below'} it.")
+        else:
+            pending = True
+
+    problem = validate_sl_tp(pos_type, price, req.sl, req.tp)
     if problem:
         raise HTTPException(status_code=400, detail=problem)
-    margin_req = compute_margin(req.qty, req.entry_price)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            port = await conn.fetchrow("SELECT * FROM portfolio WHERE id = 1 FOR UPDATE")
-            available = float(port["capital"]) - float(port["used_margin"])
-            if available < margin_req:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient margin. Available: ₹{available:,.2f}, Required: ₹{margin_req:,.2f}"
-                )
+            if pending:
+                row = await conn.fetchrow(
+                    """INSERT INTO orders (symbol, type, qty, price, sl, tp, order_type, product, price_symbol)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+                    symbol, pos_type, req.qty, price, req.sl, req.tp, order_type, req.product, req.price_symbol)
+                return {"status": "pending", "order_id": row["id"], "id": row["id"], "margin_used": 0}
+            pos_id, margin = await _open_position(
+                conn, symbol, pos_type, req.qty, price, req.sl, req.tp, order_type, req.product, req.price_symbol)
+    return {"status": "success", "id": pos_id, "margin_used": margin, "fill_price": price}
 
-            await conn.execute(
-                "UPDATE portfolio SET used_margin = used_margin + $1 WHERE id = 1",
-                margin_req
-            )
-            row = await conn.fetchrow(
-                """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                   RETURNING id""",
-                req.symbol.upper(), req.type.upper(), req.qty,
-                req.entry_price, req.sl, req.tp,
-                datetime.datetime.now(datetime.timezone.utc),
-                req.price_symbol
-            )
-    return {"status": "success", "id": row["id"], "margin_used": margin_req}
+
+@app.get("/api/paper/orders")
+async def get_orders(request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM orders ORDER BY id DESC")
+    return {"orders": [dict(r) for r in rows]}
+
+
+@app.delete("/api/paper/orders/{order_id}")
+async def cancel_order(order_id: int, request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        gone = await conn.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING id", order_id)
+    if not gone:
+        raise HTTPException(status_code=404, detail="Order not found (already filled or cancelled)")
+    return {"status": "success"}
 
 
 @app.post("/api/paper/exit")
@@ -468,6 +584,7 @@ async def reset_portfolio(request: Request):
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("DELETE FROM positions")
+            await conn.execute("DELETE FROM orders")
             await conn.execute("DELETE FROM history")
             await conn.execute(
                 "UPDATE portfolio SET capital = 1000000.00, used_margin = 0.00, total_pnl = 0.00 WHERE id = 1"

@@ -25,6 +25,8 @@ export async function refreshPaperTrading() {
     if (State.ptPositions.length > 0) paperTradingLoop();
     _subscribeWsForPositions();
 
+    renderPTOrders(await fetch(CONFIG.PROXY_BASE + '/api/paper/orders', { cache: 'no-store' }).then(r => r.json()).then(d => d.orders).catch(() => []));
+
     const rHist = await fetch(CONFIG.PROXY_BASE + '/api/paper/history', { cache: 'no-store' });
     const dHist = await rHist.json();
     renderPTHistory(dHist.history);
@@ -56,6 +58,27 @@ export function renderPTPositions() {
       </td>
     </tr>`;
   }).join('');
+}
+
+export function renderPTOrders(orders) {
+  const card = document.getElementById('pt-orders-card');
+  const tb = document.getElementById('pt-orders-body');
+  if (!card || !tb) return;
+  card.style.display = orders.length ? '' : 'none';
+  tb.innerHTML = orders.map(o => `<tr>
+    <td style="font-weight:600">${DOM.esc(o.symbol)}</td>
+    <td style="color:${o.type === 'LONG' ? 'var(--green)' : 'var(--down)'};font-weight:600">${DOM.esc(o.type)}</td>
+    <td>${DOM.esc(o.order_type)}</td>
+    <td>${o.qty}</td>
+    <td style="font-family:var(--font-mono)">${(+o.price).toFixed(2)}</td>
+    <td style="font-family:var(--font-mono)">${(+o.sl).toFixed(2)} / ${(+o.tp).toFixed(2)}</td>
+    <td><button class="btn btn-sm btn-ghost" onclick="cancelPTOrder(${o.id})">Cancel</button></td>
+  </tr>`).join('');
+}
+
+export async function cancelPTOrder(id) {
+  await fetch(`${CONFIG.PROXY_BASE}/api/paper/orders/${id}`, { method: 'DELETE' });
+  refreshPaperTrading();
 }
 
 export function renderPTHistory(hist) {
@@ -345,7 +368,13 @@ export async function ptPlaceOrder() {
 
   setStatus('Fetching price...', 'var(--clr-text-3)');
   let entryPrice = parseFloat(document.getElementById('pt-price')?.value || '0');
-  if (!entryPrice || ot === 'MARKET') {
+  if (ot === 'SL' || ot === 'SL-M') {
+    // Stop orders are keyed on the trigger price; the server holds them until the market reaches it.
+    entryPrice = parseFloat(document.getElementById('pt-trigger')?.value || '0');
+    if (!entryPrice) { setStatus('⚠ Enter the trigger price', 'var(--clr-red)'); return; }
+  } else if (ot === 'LIMIT' && !entryPrice) {
+    setStatus('⚠ Enter the limit price', 'var(--clr-red)'); return;
+  } else if (!entryPrice || ot === 'MARKET') {
     const d = await getPrice(_toYahooSym(sym));
     if (!d) { setStatus('\u26a0 Could not fetch market price', 'var(--clr-red)'); return; }
     entryPrice = d.c;

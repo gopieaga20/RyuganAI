@@ -16,7 +16,7 @@ import { loadLotSizes } from './lot-sizes.js';
 import {
   refreshPaperTrading, resetPaperTrading, paperTradingLoop, _fetchDayStats,
   onPTSymSelect, ptSetDir, ptOrderTypeChange, ptPlaceOrder, ptFetchLTP, ptAutoFillSignal,
-  executeCurrentSignal, executePaperTrade, squareOffPosition, ptModifyPosition
+  executeCurrentSignal, executePaperTrade, squareOffPosition, ptModifyPosition, cancelPTOrder
 } from './paper-trading.js';
 import { openStockBrowser, closeStockBrowser } from './stock-browser.js';
 import { loadOptionChain, runFoAnalysis } from './option-chain.js';
@@ -151,6 +151,7 @@ window.WL = WL;
 // (see signals.js / paper-trading.js) — must stay on window for those clicks to work.
 window.executePaperTrade = executePaperTrade;
 window.squareOffPosition = squareOffPosition;
+window.cancelPTOrder = cancelPTOrder;
 window.ptModifyPosition = ptModifyPosition;
 window.openStockBrowser = openStockBrowser;
 window.closeStockBrowser = closeStockBrowser;

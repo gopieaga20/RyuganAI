@@ -26,7 +26,22 @@ CREATE TABLE IF NOT EXISTS positions (
     order_type  TEXT        NOT NULL DEFAULT 'MARKET',
     product     TEXT        NOT NULL DEFAULT 'MIS',
     price_symbol TEXT,
+    margin      NUMERIC(14, 2),
     entry_time  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id           SERIAL PRIMARY KEY,
+    symbol       TEXT        NOT NULL,
+    type         TEXT        NOT NULL CHECK (type IN ('LONG', 'SHORT')),
+    qty          INTEGER     NOT NULL CHECK (qty > 0),
+    price        NUMERIC(12, 2) NOT NULL,
+    sl           NUMERIC(12, 2) NOT NULL,
+    tp           NUMERIC(12, 2) NOT NULL,
+    order_type   TEXT        NOT NULL,
+    product      TEXT        NOT NULL DEFAULT 'MIS',
+    price_symbol TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS history (
