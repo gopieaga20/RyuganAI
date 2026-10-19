@@ -524,7 +524,7 @@
               <div class="card-title">Data Configuration</div>
               <div class="filter-bar flex-wrap mb12">
                 <div class="fg"><label>Symbol</label>
-                  <select id="bt-sym">
+                  <select id="bt-sym" onchange="applyBtLotSize()">
                     <option value="^NSEI">Nifty 50</option>
                     <option value="^NSEBANK">Bank Nifty</option>
                     <option value="^BSESN">Sensex</option>
@@ -568,7 +568,7 @@
                 </div>
               </div>
               <div class="filter-bar flex-wrap mb12" id="fo-lot-row" style="display:none">
-                <div class="fg"><label>Lot Size</label><input type="number" id="bt-lotsize" value="50" min="1" /></div>
+                <div class="fg"><label>Lot Size</label><input type="number" id="bt-lotsize" value="65" min="1" /></div>
                 <div class="fg"><label>Lots to Trade</label><input type="number" id="bt-lots" value="1" min="1" /></div>
                 <div class="fg" id="fo-options-row" style="display:none"><label>Option Type</label>
                   <select id="bt-opttype">

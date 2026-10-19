@@ -8,6 +8,7 @@ import { callClaude } from './ai.js';
 import { yahooFetch, getPrice } from './market-data.js';
 import { switchBTTab, showOv, hideOv } from './app.js';
 import { BT_SWING_INTERVALS, BT_DEFAULT_PERIOD, BT_PERIOD_DAYS } from './timeframes.js';
+import { loadLotSizes, lotSizeFor } from './lot-sizes.js';
 
 export function onBtTimeframeChange() {
   const tf = document.getElementById('bt-tf')?.value;
@@ -30,23 +31,23 @@ export function toggleStrat(s) {
   }
 }
 
-// Show/hide F&O-only strategies based on segment selection
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('bt-segment')?.addEventListener('change', function () {
-    const isFO = this.value === 'futures' || this.value === 'options';
-    document.querySelectorAll('.fo-only').forEach(el => el.style.display = isFO ? '' : 'none');
-    document.getElementById('fo-cost-note').style.display = isFO ? '' : 'none';
-    document.getElementById('bt-lot-wrap').style.display = isFO ? '' : 'none';
-    if (isFO) {
-      State.selStrats.add('straddle');
-      State.selStrats.add('bull_spread');
-      State.selStrats.add('bear_spread');
-      ['sc-straddle', 'sc-bull-spread', 'sc-bear-spread'].forEach(id => document.getElementById(id)?.classList.add('active'));
-    } else {
-      ['straddle', 'bull_spread', 'bear_spread'].forEach(s => State.selStrats.delete(s));
-    }
-  });
-});
+// Segment control: show the lot-size row for F&O segments and fill it from the contract list.
+export async function applyBtLotSize() {
+  await loadLotSizes();
+  const lot = lotSizeFor(document.getElementById('bt-sym')?.value);
+  const input = document.getElementById('bt-lotsize');
+  if (input && lot) input.value = lot;
+}
+
+export async function updateBTSegment() {
+  const seg = document.getElementById('bt-segment')?.value || 'intraday';
+  const isFO = seg.startsWith('fo_');
+  const lotRow = document.getElementById('fo-lot-row');
+  if (lotRow) lotRow.style.display = isFO ? '' : 'none';
+  const optRow = document.getElementById('fo-options-row');
+  if (optRow) optRow.style.display = seg === 'fo_options' ? '' : 'none';
+  if (isFO) await applyBtLotSize();
+}
 
 export async function btFetchData() {
   const sym = document.getElementById('bt-sym')?.value;
@@ -163,7 +164,9 @@ export function runBacktest() {
   const warmup = isSwing ? Math.min(30, Math.max(10, Math.floor(State.btData.length / 4))) : 30;
   showOv('RUNNING BACKTEST ENGINE...');
   State.tradeLog = [];
-  const segment = document.getElementById('bt-segment')?.value || 'intraday';
+  // The dropdown values are fo_futures / fo_options; the charges model knows futures / options.
+  const rawSegment = document.getElementById('bt-segment')?.value || 'intraday';
+  const segment = { fo_futures: 'futures', fo_options: 'options' }[rawSegment] || rawSegment;
   const lotSize = parseInt(document.getElementById('bt-lotsize')?.value || '1') || 1;
 
   setTimeout(() => {

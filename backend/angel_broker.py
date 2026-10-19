@@ -20,6 +20,7 @@ _master_lookup = {}        # symbol -> {exch, token}
 _is_loaded = False
 _nse_equities = []         # [{symbol, name}, ...] — all NSE cash-market equities
 _options_index = {}        # underlying name -> [{symbol, token, expiry, strike, type}, ...]
+_lot_sizes = {}            # F&O underlying name -> contract lot size (e.g. NIFTY -> 65)
 # The SDK is synchronous and the API calls it from worker threads, so login and the one-time
 # master-contract download must not run twice concurrently.
 _lock = threading.RLock()
@@ -83,7 +84,7 @@ def load_master_contract():
 
 
 def _load_master_contract_locked():
-    global _is_loaded, _master_lookup, _nse_equities, _options_index
+    global _is_loaded, _master_lookup, _nse_equities, _options_index, _lot_sizes
     if _is_loaded:  # another thread finished the download while we waited for the lock
         return
     try:
@@ -95,9 +96,20 @@ def _load_master_contract_locked():
 
         equities = []
         options = {}
+        lot_sizes = {}
         # Build lookup keyed by symbol string (uppercase), only NSE/NFO
         for item in data:
             exch = item.get("exch_seg", "")
+            # BSE index derivatives (Sensex, Bankex): only their lot sizes are needed, so don't
+            # pull the ~40k BSE contracts into the symbol lookup. NSE/NFO values take priority.
+            if exch == "BFO" and item.get("instrumenttype") in ("OPTIDX", "FUTIDX"):
+                try:
+                    bse_lot = int(float(item.get("lotsize", 0)))
+                except (TypeError, ValueError):
+                    bse_lot = 0
+                if bse_lot > 0:
+                    lot_sizes.setdefault(item.get("name", ""), bse_lot)
+                continue
             if exch in ("NSE", "NFO"):
                 sym = str(item.get("symbol", "")).strip()
                 _master_lookup[sym] = {
@@ -109,6 +121,13 @@ def _load_master_contract_locked():
                     equities.append({"symbol": sym[:-3], "name": item.get("name", sym[:-3])})
 
                 instrument = item.get("instrumenttype", "")
+                if exch == "NFO" and instrument in ("OPTIDX", "OPTSTK", "FUTIDX", "FUTSTK"):
+                    try:
+                        lot = int(float(item.get("lotsize", 0)))
+                    except (TypeError, ValueError):
+                        lot = 0
+                    if lot > 0:
+                        lot_sizes[item.get("name", "")] = lot
                 if exch == "NFO" and instrument in ("OPTIDX", "OPTSTK"):
                     opt_type = "CE" if sym.endswith("CE") else "PE" if sym.endswith("PE") else None
                     try:
@@ -128,6 +147,7 @@ def _load_master_contract_locked():
         equities.sort(key=lambda e: e["symbol"])
         _nse_equities = equities
         _options_index = options
+        _lot_sizes = lot_sizes
         _is_loaded = True
         print(f"Angel Scrip Master loaded: {len(_master_lookup)} symbols, {len(_nse_equities)} NSE equities, {len(_options_index)} F&O underlyings.")
     except Exception as e:
@@ -212,6 +232,14 @@ def search_option_contracts(query: str, limit: int = 40):
             "type": c["type"],
         })
     return out
+
+
+def get_lot_sizes():
+    """Contract lot size for every F&O underlying, straight from the exchange contract list:
+    {"NIFTY": 65, "BANKNIFTY": 30, "RELIANCE": 500, ...}. Lot sizes change over time, so
+    nothing in the app should hardcode them."""
+    load_master_contract()
+    return dict(_lot_sizes)
 
 
 def get_option_contracts(underlying: str):

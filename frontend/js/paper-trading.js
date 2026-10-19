@@ -6,6 +6,7 @@ import { State } from './state.js';
 import { yahooFetch, getPrice, _toYahooSym } from './market-data.js';
 import { switchTab } from './app.js';
 import { subscribeLivePrices } from './ws-prices.js';
+import { loadLotSizes, lotSizeFor, tradedInLots } from './lot-sizes.js';
 
 /* ═══════════════════════════════════════════
    MODULE: PAPER TRADING
@@ -80,17 +81,14 @@ export function renderPTHistory(hist) {
   }).join('');
 }
 
-export function onPTSymSelect(sym) {
+export async function onPTSymSelect(sym) {
   if (!sym) return;
+  // Indices and real option contracts trade in lots: default the quantity to one lot,
+  // using the current lot size from the exchange contract list (never a hardcoded number).
+  await loadLotSizes();
   const qId = document.getElementById('pt-qty');
-  if (qId) {
-    const s = sym.toUpperCase();
-    if (s.includes('BANKNIFTY') || s.includes('BANK NIFTY')) qId.value = 15;
-    else if (s.includes('FINNIFTY')) qId.value = 25;
-    else if (s.includes('MIDCPNIFTY')) qId.value = 50;
-    else if (s.includes('SENSEX')) qId.value = 10;
-    else if (s.includes('NIFTY')) qId.value = 65;
-  }
+  const lot = tradedInLots(sym) ? lotSizeFor(sym) : null;
+  if (qId && lot) qId.value = lot;
   ptFetchLTP();
 }
 
@@ -119,7 +117,8 @@ export async function executeVirtualTrade(symbol, type, qty, entry, sl, tp) {
   } catch { alert('API connection failed — is the backend running?'); }
 }
 
-export function executeCurrentSignal() {
+export async function executeCurrentSignal() {
+  await loadLotSizes();
   const sym = document.getElementById('sh-sym-label')?.textContent || 'NIFTY 50';
   const isBuy = !!document.querySelector('.badge-buy');
   const isSell = !!document.querySelector('.badge-sell');
@@ -129,15 +128,18 @@ export function executeCurrentSignal() {
   const sl = document.getElementById('nl-sl')?.textContent;
   const t1 = document.getElementById('nl-t1')?.textContent;
   if (!entry || entry === '--') { alert('Signal is not ready'); return; }
-  const qty = parseInt(prompt(`Quantity for ${sym} (Default: 50 lots = 1 Nifty lot):`, '50'));
+  const lot = tradedInLots(sym) ? lotSizeFor(sym) : null;
+  const qty = parseInt(prompt(lot ? `Quantity for ${sym} (1 lot = ${lot}):` : `Quantity for ${sym}:`, String(lot || 1)));
   if (!qty || qty <= 0) return;
   executeVirtualTrade(sym, sig, qty, entry, sl, t1);
 }
 
-export function executePaperTrade(symbol, signal, entry, sl, tp) {
+export async function executePaperTrade(symbol, signal, entry, sl, tp) {
   if (signal === 'HOLD') { alert('Signal is HOLD — cannot execute.'); return; }
   if (!entry || isNaN(entry)) { alert('Invalid entry price.'); return; }
-  const qty = parseInt(prompt(`Quantity for ${symbol}:`, '100'));
+  await loadLotSizes();
+  const lot = tradedInLots(symbol) ? lotSizeFor(symbol) : null;
+  const qty = parseInt(prompt(lot ? `Quantity for ${symbol} (1 lot = ${lot}):` : `Quantity for ${symbol}:`, String(lot || 100)));
   if (!qty || qty <= 0) return;
   executeVirtualTrade(symbol, signal, qty, entry, sl, tp);
 }

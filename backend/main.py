@@ -28,6 +28,7 @@ try:
         get_nse_equities,
         get_option_contracts,
         search_option_contracts,
+        get_lot_sizes,
         get_angel_client,
         load_master_contract,
     )
@@ -38,6 +39,7 @@ except ImportError:
     def get_nse_equities(): return []
     def get_option_contracts(underlying): return []
     def search_option_contracts(query, limit=40): return []
+    def get_lot_sizes(): return {}
     def get_angel_client(): return None
     def load_master_contract(): pass
     _angel_broker = None
@@ -624,6 +626,15 @@ async def list_fo_underlyings():
     _fo_underlyings_cache["data"] = data
     _fo_underlyings_cache["fetched_at"] = now
     return {"underlyings": data, "cached": False}
+
+
+@app.get("/api/lot-sizes")
+async def lot_sizes():
+    """Current lot size for every F&O underlying, read from Angel's contract list (not hardcoded)."""
+    sizes = await asyncio.to_thread(get_lot_sizes)
+    if not sizes:
+        raise HTTPException(status_code=503, detail="Lot sizes unavailable (contract list failed to load).")
+    return {"lot_sizes": sizes, "count": len(sizes)}
 
 
 @app.get("/api/options/search")

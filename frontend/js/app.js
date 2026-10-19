@@ -9,8 +9,10 @@ import { askA, sendChat } from './chat.js';
 import {
   toggleStrat, btFetchData, runBacktest, btReset, filterTrades,
   initReplay, rStep, togglePlay, getAIReview, askAIQa,
-  saveBacktestResult, loadBacktestHistory, onBtTimeframeChange
+  saveBacktestResult, loadBacktestHistory, onBtTimeframeChange,
+  updateBTSegment, applyBtLotSize
 } from './backtest.js';
+import { loadLotSizes } from './lot-sizes.js';
 import {
   refreshPaperTrading, resetPaperTrading, paperTradingLoop, _fetchDayStats,
   onPTSymSelect, ptSetDir, ptOrderTypeChange, ptPlaceOrder, ptFetchLTP, ptAutoFillSignal,
@@ -98,6 +100,7 @@ window.addEventListener('load', async () => {
   fetchGlobalCues();
   refreshNiftySignal();
   loadBacktestHistory();
+  loadLotSizes().then(applyBtLotSize); // current lot sizes from the exchange list, not hardcoded
 
   DOM.setText('nticker', 'Welcome to Ryugan AI — loading live Nifty 50 signal...');
 });
@@ -125,6 +128,8 @@ window.btReset = btReset;
 window.filterTrades = filterTrades;
 window.saveBacktestResult = saveBacktestResult;
 window.onBtTimeframeChange = onBtTimeframeChange;
+window.updateBTSegment = updateBTSegment;
+window.applyBtLotSize = applyBtLotSize;
 window.initReplay = initReplay;
 window.rStep = rStep;
 window.togglePlay = togglePlay;
