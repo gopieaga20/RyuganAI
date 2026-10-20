@@ -770,6 +770,163 @@ async def ws_prices(websocket: WebSocket):
 
 
 # ─────────────────────────────────────────────
+# SYMBOL UNIVERSE — full NSE stock list + F&O underlyings
+# ─────────────────────────────────────────────
+
+@app.get("/api/stocks")
+async def list_stocks():
+    """Full NSE cash-market equity list (~2700 symbols), from Angel's public
+    scrip master — no broker session/API key required for this endpoint."""
+    equities = await asyncio.to_thread(get_nse_equities)
+    if not equities:
+        raise HTTPException(status_code=503, detail="Stock list unavailable (scrip master failed to load).")
+    return {"stocks": equities, "count": len(equities)}
+
+
+_fo_underlyings_cache: dict = {}
+_FO_UNDERLYINGS_TTL = 24 * 60 * 60  # 24h — this list changes rarely
+
+@app.get("/api/fo/underlyings")
+async def list_fo_underlyings():
+    """Full list of F&O underlyings (indices + ~211 stocks) from NSE."""
+    now = time.time()
+    if _fo_underlyings_cache.get("fetched_at") and now - _fo_underlyings_cache["fetched_at"] < _FO_UNDERLYINGS_TTL:
+        return {"underlyings": _fo_underlyings_cache["data"], "cached": True}
+    data = await get_fo_underlyings()
+    _fo_underlyings_cache["data"] = data
+    _fo_underlyings_cache["fetched_at"] = now
+    return {"underlyings": data, "cached": False}
+
+
+@app.get("/api/lot-sizes")
+async def lot_sizes():
+    """Current lot size for every F&O underlying, read from Angel's contract list (not hardcoded)."""
+    sizes = await asyncio.to_thread(get_lot_sizes)
+    if not sizes:
+        raise HTTPException(status_code=503, detail="Lot sizes unavailable (contract list failed to load).")
+    return {"lot_sizes": sizes, "count": len(sizes)}
+
+
+@app.get("/api/options/search")
+async def search_options(q: str, limit: int = 40):
+    """Real, unexpired option contracts matching free text like "NIFTY 23100" or "reliance 1260 ce".
+    Powers the symbol-box suggestions. Needs a strike in the query; returns [] otherwise.
+    Uses only Angel's public scrip master, so no broker login is required."""
+    limit = max(1, min(100, limit))
+    results = await asyncio.to_thread(search_option_contracts, q, limit)
+    return {"contracts": results, "count": len(results)}
+
+
+def _parse_angel_expiry(s: str) -> datetime.datetime:
+    """Parse Angel's 'DDMMMYYYY' expiry strings (e.g. '29SEP2026') for sorting."""
+    try:
+        return datetime.datetime.strptime(s, "%d%b%Y")
+    except Exception:
+        return datetime.datetime.max
+
+
+@app.get("/api/fo/option-chain")
+async def get_option_chain(underlying: str, expiry: Optional[str] = None, strikes: int = 10,
+                           center: Optional[float] = None):
+    """Real option chain (LTP, OI, % change) for an F&O underlying, from Angel One.
+    `strikes` = how many strikes to include on each side of the window centre, which is the
+    ATM strike by default or `center` (e.g. a specific contract's strike) when given."""
+    client = await asyncio.to_thread(get_angel_client)
+    if not client:
+        raise HTTPException(
+            status_code=503,
+            detail="Angel One session unavailable — check ANGEL_* credentials in backend/.env."
+        )
+    await asyncio.to_thread(load_master_contract)
+
+    key = underlying.strip().upper()
+    contracts = get_option_contracts(key)
+    if not contracts:
+        raise HTTPException(status_code=404, detail=f"No F&O contracts found for '{underlying}'.")
+
+    all_expiries = sorted({c["expiry"] for c in contracts}, key=_parse_angel_expiry)
+    if expiry:
+        if expiry not in all_expiries:
+            raise HTTPException(status_code=400, detail=f"Unknown expiry '{expiry}' for {underlying}.")
+        chosen_expiry = expiry
+    else:
+        today = datetime.datetime.now()
+        future = [e for e in all_expiries if _parse_angel_expiry(e) >= today]
+        chosen_expiry = future[0] if future else all_expiries[0]
+
+    exp_contracts = [c for c in contracts if c["expiry"] == chosen_expiry]
+    strike_vals = sorted({c["strike"] for c in exp_contracts})
+
+    # Spot price, to center the strike window on the ATM strike.
+    spot = None
+    spot_info = _angel_broker._master_lookup.get(key) or _angel_broker._master_lookup.get(key + "-EQ")
+    if spot_info:
+        try:
+            res = await asyncio.to_thread(
+                client.getMarketData, mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
+            fetched = (res or {}).get("data", {}).get("fetched") or []
+            if fetched:
+                spot = float(fetched[0]["ltp"])
+        except Exception as e:
+            print(f"[WARN] option-chain spot lookup failed for {key}: {e}")
+
+    if center is not None:
+        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - center))
+    elif spot:
+        atm_idx = min(range(len(strike_vals)), key=lambda i: abs(strike_vals[i] - spot))
+    else:
+        atm_idx = len(strike_vals) // 2
+    lo = max(0, atm_idx - strikes)
+    hi = min(len(strike_vals), atm_idx + strikes + 1)
+    selected_strikes = strike_vals[lo:hi]
+
+    by_strike: dict = {}
+    for c in exp_contracts:
+        if c["strike"] in selected_strikes:
+            by_strike.setdefault(c["strike"], {})[c["type"]] = c
+
+    tokens = [c["token"] for row in by_strike.values() for c in row.values()]
+    quotes: dict = {}
+    for i in range(0, len(tokens), 50):  # Angel caps tokens per request
+        batch = tokens[i:i + 50]
+        try:
+            res = await asyncio.to_thread(client.getMarketData, mode="FULL", exchangeTokens={"NFO": batch})
+            for item in (res or {}).get("data", {}).get("fetched") or []:
+                quotes[item["symbolToken"]] = item
+        except Exception as e:
+            print(f"[WARN] option-chain quote batch failed: {e}")
+
+    def _row(c):
+        q = quotes.get(c["token"])
+        if not q:
+            return None
+        return {
+            "symbol": c["symbol"],
+            "ltp": q.get("ltp"),
+            "change_pct": q.get("percentChange"),
+            "oi": q.get("opnInterest"),
+            "volume": q.get("tradeVolume"),
+        }
+
+    rows = []
+    for strike in selected_strikes:
+        pair = by_strike.get(strike, {})
+        rows.append({
+            "strike": strike,
+            "ce": _row(pair["CE"]) if "CE" in pair else None,
+            "pe": _row(pair["PE"]) if "PE" in pair else None,
+        })
+
+    return {
+        "underlying": key,
+        "spot": spot,
+        "expiry": chosen_expiry,
+        "expiries": all_expiries[:12],
+        "rows": rows,
+    }
+
+
+# ─────────────────────────────────────────────
 # ANGEL ONE BROKER ENDPOINTS
 # ─────────────────────────────────────────────
 
