@@ -9,6 +9,7 @@ import re
 import urllib.request
 import json
 import threading
+import time
 import pyotp # type: ignore
 from datetime import datetime, timedelta
 
@@ -24,6 +25,16 @@ _lot_sizes = {}            # F&O underlying name -> contract lot size (e.g. NIFT
 # The SDK is synchronous and the API calls it from worker threads, so login and the one-time
 # master-contract download must not run twice concurrently.
 _lock = threading.RLock()
+_master_lock = threading.Lock()   # separate: a slow download must never block Angel login / quotes
+_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+# The file is ~7 MB and Angel's server can take well over a minute to send it, so keep a copy on disk
+# (reused for a day; a stale copy still beats no copy) and don't hammer the server after a failure.
+_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "scrip_master.json")
+_CACHE_MAX_AGE = 24 * 3600
+_DOWNLOAD_TIMEOUT = 180
+_RETRY_AFTER = 60
+_next_attempt = 0.0        # monotonic time before which a failed download isn't retried
+_bg_loading = False
 
 # ── Session management ────────────────────────────────────────────────────────
 
@@ -79,20 +90,114 @@ def load_master_contract():
     global _is_loaded, _master_lookup, _nse_equities, _options_index
     if _is_loaded:
         return
-    with _lock:
+    with _master_lock:
         _load_master_contract_locked()
 
 
-def _load_master_contract_locked():
-    global _is_loaded, _master_lookup, _nse_equities, _options_index, _lot_sizes
-    if _is_loaded:  # another thread finished the download while we waited for the lock
-        return
+def _read_cache(max_age=None):
+    """Parsed master list from the disk copy, or None when missing/unreadable/older than max_age."""
+    if not _CACHE_PATH or not os.path.exists(_CACHE_PATH):
+        return None
+    if max_age is not None and time.time() - os.path.getmtime(_CACHE_PATH) > max_age:
+        return None
+    try:
+        with open(_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _download_resumable(url, attempts=6):
+    """Download `url`, resuming with a Range request when the connection drops mid-transfer
+    (Angel's server is slow and often cuts the ~36 MB file short)."""
+    buf = bytearray()
+    total = None
+    last = None
+    for _ in range(attempts):
+        headers = {"User-Agent": "Mozilla/5.0"}
+        if buf:
+            headers["Range"] = f"bytes={len(buf)}-"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp:
+                status = getattr(resp, "status", 200)
+                if buf and status != 206:
+                    buf.clear()                       # server ignored the Range header: start over
+                if total is None:
+                    try:
+                        total = int(resp.headers.get("Content-Length")) if resp.headers.get("Content-Length") else None
+                    except (AttributeError, TypeError, ValueError):
+                        total = None
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+            if total is None or len(buf) >= total:
+                return bytes(buf)
+            last = IOError(f"short download: {len(buf)} of {total} bytes")
+        except Exception as e:
+            last = e
+    raise last or IOError("download failed")
+
+
+def _fetch_master():
+    """Master contract list: fresh disk copy, else download (and cache), else a stale disk copy."""
+    data = _read_cache(_CACHE_MAX_AGE)
+    if data:
+        return data
     try:
         print("Downloading Angel OpenAPIScripMaster.json...")
-        url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        raw = _download_resumable(_MASTER_URL)
+        data = json.loads(raw.decode("utf-8"))
+        if _CACHE_PATH:
+            try:
+                os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
+                tmp = _CACHE_PATH + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+                os.replace(tmp, _CACHE_PATH)
+            except OSError as e:
+                print(f"[WARN] Could not cache the scrip master: {e}")
+        return data
+    except Exception:
+        stale = _read_cache()
+        if stale:
+            print("[WARN] Scrip master download failed; using the older copy on disk.")
+            return stale
+        raise
+
+
+def master_ready() -> bool:
+    return _is_loaded
+
+
+def ensure_master_loading():
+    """Start the master download in the background if it isn't loaded or already loading.
+    Request paths that can live without the master call this and fall back instead of waiting."""
+    global _bg_loading
+    if _is_loaded or _bg_loading:
+        return
+
+    def work():
+        global _bg_loading
+        try:
+            load_master_contract()
+        finally:
+            _bg_loading = False
+
+    _bg_loading = True
+    threading.Thread(target=work, daemon=True, name="scrip-master").start()
+
+
+def _load_master_contract_locked():
+    global _is_loaded, _master_lookup, _nse_equities, _options_index, _lot_sizes, _next_attempt
+    if _is_loaded:  # another thread finished the download while we waited for the lock
+        return
+    if time.monotonic() < _next_attempt:  # failed recently: don't make every request wait through another attempt
+        return
+    try:
+        data = _fetch_master()
 
         equities = []
         options = {}
@@ -151,7 +256,8 @@ def _load_master_contract_locked():
         _is_loaded = True
         print(f"Angel Scrip Master loaded: {len(_master_lookup)} symbols, {len(_nse_equities)} NSE equities, {len(_options_index)} F&O underlyings.")
     except Exception as e:
-        print(f"Failed to load Angel Scrip Master: {e}")
+        _next_attempt = time.monotonic() + _RETRY_AFTER
+        print(f"Failed to load Angel Scrip Master: {e!r} (retrying in {_RETRY_AFTER}s)")
 
 
 def get_nse_equities():
@@ -318,7 +424,9 @@ def get_quote(symbol: str):
     if not client:
         return None
 
-    load_master_contract()
+    if not _is_loaded:
+        ensure_master_loading()   # symbol mapping needs the master; callers fall back to Yahoo meanwhile
+        return None
 
     mapped_sym, info = _lookup_with_fuzzy(symbol)
     if not info:
@@ -386,7 +494,9 @@ def get_historical(symbol: str, interval: str = "15m", days: int = 90):
     if not client:
         return None
 
-    load_master_contract()
+    if not _is_loaded:
+        ensure_master_loading()
+        return None
 
     mapped_sym, info = _lookup_with_fuzzy(symbol)
     if not info:

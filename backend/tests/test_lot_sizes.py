@@ -13,9 +13,14 @@ import angel_broker as ab
 class _Resp:
     def __init__(self, payload):
         self._body = json.dumps(payload).encode()
+        self._pos = 0
+        self.headers = {}
+        self.status = 200
 
-    def read(self):
-        return self._body
+    def read(self, n=-1):
+        end = len(self._body) if n < 0 else self._pos + n
+        out, self._pos = self._body[self._pos:end], min(end, len(self._body))
+        return out
 
     def __enter__(self):
         return self
@@ -45,6 +50,8 @@ def fake_master(monkeypatch):
     ]
     monkeypatch.setattr(ab.urllib.request, "urlopen", lambda *a, **k: _Resp(data))
     monkeypatch.setattr(ab, "_is_loaded", False)
+    monkeypatch.setattr(ab, "_CACHE_PATH", None)        # never read or write the real disk cache in tests
+    monkeypatch.setattr(ab, "_next_attempt", 0.0)
     monkeypatch.setattr(ab, "_master_lookup", {})
     monkeypatch.setattr(ab, "_nse_equities", [])
     monkeypatch.setattr(ab, "_options_index", {})

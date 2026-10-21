@@ -1026,7 +1026,9 @@ async def get_global_cues():
     gift_data = None
     try:
         import angel_broker as _ab
-        await asyncio.to_thread(_ab.load_master_contract)
+        if not _ab.master_ready():
+            _ab.ensure_master_loading()       # don't make the page wait for a slow download; the GIFT proxy is optional
+            raise RuntimeError("scrip master still loading")
         import re
         fut_pattern = re.compile(r"^NIFTY\d{2}[A-Z]{3}\d{2}FUT$")
         nifty_futs = [k for k in _ab._master_lookup.keys() if fut_pattern.match(k)]
