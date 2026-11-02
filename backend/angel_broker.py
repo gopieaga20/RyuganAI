@@ -479,16 +479,72 @@ _ANGEL_INTERVAL_MAP = {
     "1wk": "ONE_WEEK",
 }
 
+# Angel caps how many days one getCandleData call may span, per candle size (conservative values), and
+# rate-limits callers, so long histories are fetched in windows, spaced out, and retried when throttled.
+# Index tokens from Angel's scrip master (instrumenttype AMXIDX), which the NSE/NFO lookup does not keep.
+_INDEX_TOKENS = {
+    "NIFTY": ("NSE", "99926000"), "BANKNIFTY": ("NSE", "99926009"),
+    "INDIA VIX": ("NSE", "99926017"), "SENSEX": ("BSE", "99919000"),
+}
+_CHUNK_DAYS = {
+    "ONE_MINUTE": 25, "FIVE_MINUTE": 90, "FIFTEEN_MINUTE": 180, "THIRTY_MINUTE": 180,
+    "ONE_HOUR": 360, "ONE_DAY": 1800, "ONE_WEEK": 1800,
+}
+_CALL_GAP_S = 3.0          # pause between calls (Angel throttles hard, even at ~1 call per second)
+_THROTTLE_WAIT_S = 10.0    # wait after an "exceeding access rate" reply (grows with each retry)
+_THROTTLE_RETRIES = 4
+
+
+def _parse_candle_rows(rows):
+    out = []
+    for row in rows or []:
+        # Angel returns: [timestamp_str, open, high, low, close, volume]
+        try:
+            ts = int(datetime.fromisoformat(str(row[0])).timestamp())
+            out.append({"t": ts, "o": float(row[1]), "h": float(row[2]), "l": float(row[3]), "c": float(row[4]), "v": int(row[5])})
+        except Exception:
+            continue
+    return out
+
+
+def _fetch_window(client, info, angel_interval, start, end):
+    """One getCandleData call with retries on throttling. Returns (candles | None, fatal_error_text | None)."""
+    params = {"exchange": info["exch"], "symboltoken": info["token"], "interval": angel_interval,
+              "fromdate": start.strftime("%Y-%m-%d %H:%M"), "todate": end.strftime("%Y-%m-%d %H:%M")}
+    last = None
+    for attempt in range(_THROTTLE_RETRIES + 1):
+        try:
+            res = client.getCandleData(historicDataParams=params)
+        except Exception as e:
+            last = str(e)
+            if "access rate" in last.lower() or "exceeding" in last.lower():
+                time.sleep(_THROTTLE_WAIT_S * (attempt + 1))
+                continue
+            return None, last
+        if res and res.get("status"):
+            return _parse_candle_rows(res.get("data")), None
+        last = str(res)
+        if "Session" in last:
+            invalidate_session()
+            return None, last
+        if "access rate" in last.lower() or "exceeding" in last.lower():
+            time.sleep(_THROTTLE_WAIT_S * (attempt + 1))
+            continue
+        return [], last            # e.g. "no data" for this window: treat as empty, keep going
+    return None, last
+
+
 def get_historical(symbol: str, interval: str = "15m", days: int = 90):
     """
-    Fetch historical OHLCV candlestick data from Angel One getCandleData API.
-    Returns list of dicts: [{t, o, h, l, c, v}, …] sorted ascending by time.
-    Returns None on failure — caller should fall back to Yahoo Finance.
+    Fetch historical OHLCV candlestick data from Angel One getCandleData API, in as many windows as needed.
+    Returns list of dicts: [{t, o, h, l, c, v}, …] sorted ascending by time, de-duplicated.
+    If a later window fails (for example the rate limit keeps refusing), what was fetched so far is returned.
+    Returns None when nothing could be fetched — caller should fall back to Yahoo Finance.
 
     Args:
         symbol:   Frontend symbol string, e.g. "^NSEI", "RELIANCE.NS", "NIFTY 24 MAR 23100 CE"
         interval: Candle interval — "1m","5m","15m","30m","1h","1d","1wk"
-        days:     Number of calendar days of history to fetch (max 365 for intraday)
+        days:     Number of calendar days of history to fetch
     """
     client = get_angel_client()
     if not client:
@@ -498,7 +554,11 @@ def get_historical(symbol: str, interval: str = "15m", days: int = 90):
         ensure_master_loading()
         return None
 
-    mapped_sym, info = _lookup_with_fuzzy(symbol)
+    idx = _INDEX_TOKENS.get(_map_symbol(symbol))            # index candles: the NSE/NFO lookup has no (or the wrong) entry
+    if idx:
+        info = {"exch": idx[0], "token": idx[1]}
+    else:
+        mapped_sym, info = _lookup_with_fuzzy(symbol)
     if not info:
         return None
 
@@ -507,45 +567,23 @@ def get_historical(symbol: str, interval: str = "15m", days: int = 90):
         print(f"Unsupported interval for Angel One: {interval}")
         return None
 
-    now   = datetime.now()
-    from_dt = now - timedelta(days=days)
-    from_str = from_dt.strftime("%Y-%m-%d %H:%M")
-    to_str   = now.strftime("%Y-%m-%d %H:%M")
-
-    try:
-        res = client.getCandleData(
-            historicDataParams={
-                "exchange": info["exch"],
-                "symboltoken": info["token"],
-                "interval": angel_interval,
-                "fromdate": from_str,
-                "todate": to_str,
-            }
-        )
-        if not (res and res.get("status") and res.get("data")):
-            if res and "Session" in str(res):
-                invalidate_session()
-            return None
-
-        candles = []
-        for row in res["data"]:
-            # Angel returns: [timestamp_str, open, high, low, close, volume]
-            try:
-                ts = int(datetime.fromisoformat(str(row[0])).timestamp())
-                candles.append({
-                    "t": ts,
-                    "o": float(row[1]),
-                    "h": float(row[2]),
-                    "l": float(row[3]),
-                    "c": float(row[4]),
-                    "v": int(row[5]),
-                })
-            except Exception:
-                continue
-
-        return candles if candles else None
-    except Exception as e:
-        print(f"Angel get_historical error for '{symbol}': {e}")
-        if "Session" in str(e):
-            invalidate_session()
-        return None
+    step = timedelta(days=_CHUNK_DAYS.get(angel_interval, 90))
+    end = datetime.now()
+    start_all = end - timedelta(days=days)
+    by_ts = {}
+    first_call = True
+    cursor_end = end
+    while cursor_end > start_all:
+        cursor_start = max(start_all, cursor_end - step)
+        if not first_call:
+            time.sleep(_CALL_GAP_S)
+        first_call = False
+        candles, err = _fetch_window(client, info, angel_interval, cursor_start, cursor_end)
+        if candles is None:
+            print(f"Angel get_historical '{symbol}' stopped at {cursor_start:%Y-%m-%d}: {err}")
+            break
+        for c in candles:
+            by_ts[c["t"]] = c
+        cursor_end = cursor_start - timedelta(minutes=1)
+    out = [by_ts[t] for t in sorted(by_ts)]
+    return out if out else None

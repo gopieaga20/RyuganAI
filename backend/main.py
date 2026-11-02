@@ -959,15 +959,15 @@ async def angel_historical(
     Args:
         symbol:   Frontend symbol (e.g. '^NSEI', 'RELIANCE.NS', 'NIFTY 24 MAR 23100 CE')
         interval: Candle size — 1m, 5m, 15m, 30m, 1h, 1d, 1wk
-        days:     Calendar days of data to fetch (max 365 for intraday)
+        days:     Calendar days of data to fetch (long ranges are fetched in several throttled windows)
 
     Returns:
         { candles: [{t, o, h, l, c, v}, ...] } sorted ascending by time
     """
     if interval not in ("1m", "5m", "15m", "30m", "1h", "1d", "1wk"):
         raise HTTPException(status_code=400, detail=f"Unsupported interval: {interval}")
-    if days < 1 or days > 365:
-        raise HTTPException(status_code=400, detail="days must be 1-365")
+    if days < 1 or days > 1500:
+        raise HTTPException(status_code=400, detail="days must be 1-1500")
 
     candles = await asyncio.to_thread(get_angel_historical, symbol, interval=interval, days=days)
     if candles is None:
@@ -1196,6 +1196,28 @@ def _aggregate_yearly(chart_json: dict) -> dict:
     }]}
     return chart_json
 
+# Short-lived cache + concurrency cap for Yahoo candles: the dashboard scanner asks for the same few symbols every
+# 5 minutes and the chart re-asks when you flip timeframes, so identical requests shouldn't each hit Yahoo.
+_CANDLE_TTL = 60.0
+_CANDLE_CACHE_MAX = 400
+_candle_cache: dict = {}                   # (symbol, interval, range) -> (stored_at, payload)
+_yahoo_slots = asyncio.Semaphore(4)
+
+
+def _candle_cache_get(key, now=None):
+    hit = _candle_cache.get(key)
+    if hit and (now or time.monotonic()) - hit[0] < _CANDLE_TTL:
+        return hit[1]
+    return None
+
+
+def _candle_cache_put(key, payload, now=None):
+    if len(_candle_cache) >= _CANDLE_CACHE_MAX:
+        oldest = min(_candle_cache, key=lambda k: _candle_cache[k][0])
+        _candle_cache.pop(oldest, None)
+    _candle_cache[key] = (now or time.monotonic(), payload)
+
+
 @app.get("/api/yahoo-chart/{symbol}")
 async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"):
     """
@@ -1212,6 +1234,11 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
     # Real option contracts aren't on Yahoo — serve Angel's candles in Yahoo's response shape.
     if _OPTION_SYMBOL_RE.match(symbol.upper()):
         return JSONResponse(content=await _option_chart(symbol.upper(), interval, range))
+
+    cache_key = (symbol, interval, range)
+    cached = _candle_cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse(content=cached)
 
     yearly = interval == "1y"
     if yearly:
@@ -1237,13 +1264,14 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.get(url, headers=headers)
-        except httpx.ConnectError as e:
-            raise HTTPException(status_code=502, detail=f"Cannot reach Yahoo Finance: {e}")
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Yahoo Finance request timed out")
+    async with _yahoo_slots:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                response = await client.get(url, headers=headers)
+            except httpx.ConnectError as e:
+                raise HTTPException(status_code=502, detail=f"Cannot reach Yahoo Finance: {e}")
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="Yahoo Finance request timed out")
 
     if response.status_code != 200:
         raise HTTPException(
@@ -1257,6 +1285,7 @@ async def get_yahoo_chart(symbol: str, interval: str = "15m", range: str = "3mo"
             payload = _aggregate_yearly(payload)
         except (KeyError, IndexError, TypeError):
             raise HTTPException(status_code=502, detail="Could not build yearly candles from Yahoo data")
+    _candle_cache_put(cache_key, payload)
     return JSONResponse(content=payload)
 
 
