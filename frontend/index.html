@@ -7,12 +7,15 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>Ryugan AI — NSE/BSE Trading Command Center</title>
+  <title>Ryugan Pro — Investment Trading Platform</title>
+  <link rel="icon" type="image/svg+xml" href="assets/logo-mark.svg" />
   <link
     href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap"
     rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
-  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="ui.css" />
+  <script>try{var t=localStorage.getItem("ryugan_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
 
@@ -20,6 +23,9 @@
 
   <div class="ov" id="ov">
     <div class="ov-inner">
+      <img class="ov-logo" src="assets/logo-mark.svg" alt="" />
+      <div class="ov-brand">RYUGAN <b>PRO</b></div>
+      <div class="ov-tag">INVESTMENT TRADING PLATFORM</div>
       <div class="ov-spin"></div>
       <p id="ovMsg">LOADING...</p>
     </div>
@@ -37,79 +43,86 @@
     </div>
   </div>
 
+  <div class="app">
+  <!-- ═══════════ TOP BAR ═══════════ -->
+  <header class="topbar">
+    <div class="tb-brand">
+      <img class="logo-img" src="assets/logo-mark.svg" alt="Ryugan Pro" />
+      <div class="tb-name">RYUGAN<b>PRO</b></div>
+    </div>
+    <div class="tb-search">
+      <span class="tb-search-ic">⌕</span>
+      <input id="top-search" type="text" list="sym-list" placeholder="Search a stock, index or contract…" autocomplete="off" oninput="debounceSearch(event, 'sym-list')" />
+      <button type="button" class="tb-btn" title="Browse all NSE stocks" onclick="openStockBrowser('stocks', v => { document.getElementById('top-search').value = v; document.getElementById('top-search').dispatchEvent(new Event('change')); })">Browse</button>
+    </div>
+    <div class="tb-indices">
+      <div class="sbt" onclick="switchTab('dash')">
+        <div class="sbt-name">NIFTY 50</div>
+        <div class="sbt-val" id="h-nifty">--,---</div>
+        <div class="sbt-chg" id="h-nifty-c">--</div>
+      </div>
+      <div class="sbt" onclick="switchTab('dash')">
+        <div class="sbt-name">BANK NIFTY</div>
+        <div class="sbt-val" id="h-bnifty">--,---</div>
+        <div class="sbt-chg" id="h-bnifty-c">--</div>
+      </div>
+      <div class="sbt">
+        <div class="sbt-name">INDIA VIX</div>
+        <div class="sbt-val vix" id="h-vix">--.-</div>
+        <div class="sbt-chg" id="h-vix-c">--</div>
+      </div>
+      <div class="sbt">
+        <div class="sbt-name">USD/INR</div>
+        <div class="sbt-val" id="h-usdinr">--.-</div>
+        <div class="sbt-chg">Forex</div>
+      </div>
+    </div>
+    <div class="tb-right">
+      <div class="tb-scan" title="Auto-scan every 5 minutes"><span class="tb-scan-dot"></span><span id="top-scan">Scanner starting…</span></div>
+      <div class="tb-market">
+        <div class="market-status-dot" id="mpulse"></div>
+        <div><div id="mstatus-txt">Checking...</div><div class="sb-clock" id="clock">--:--:-- IST</div></div>
+      </div>
+      <button class="tb-icon" id="theme-toggle" title="Switch dark / light theme" onclick="toggleTheme()">◐</button>
+    </div>
+  </header>
+
   <div class="layout">
 
-    <!-- ═══════════ SIDEBAR ═══════════ -->
+    <!-- ═══════════ NAV RAIL ═══════════ -->
     <aside class="sidebar">
-      <div class="sb-logo">
-        <div class="sb-logo-mark">竜</div>
-        <div>
-          <div class="sb-name">RYUGAN AI</div>
-          <div class="sb-sub">NSE · BSE · F&amp;O</div>
-        </div>
-      </div>
-
       <nav class="sb-nav">
-        <button class="nav-btn active" onclick="switchTab('nifty')" data-tab="nifty">
-          <span class="nav-icon">◈</span> Nifty Live
+        <button class="nav-btn active" onclick="switchTab('dash')" data-tab="dash">
+          <span class="nav-icon">▤</span><span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-btn" onclick="switchTab('nifty')" data-tab="nifty">
+          <span class="nav-icon">◈</span><span class="nav-label">Nifty Live</span>
         </button>
         <button class="nav-btn" onclick="switchTab('signals')" data-tab="signals">
-          <span class="nav-icon">⚡</span> Signal Engine
-        </button>
-        <button class="nav-btn" onclick="switchTab('morning')" data-tab="morning">
-          <span class="nav-icon">◉</span> Morning Brief
+          <span class="nav-icon">⚡</span><span class="nav-label">Signal Engine</span>
         </button>
         <button class="nav-btn" onclick="switchTab('fo')" data-tab="fo">
-          <span class="nav-icon">◎</span> F&amp;O Dashboard
+          <span class="nav-icon">◎</span><span class="nav-label">F&amp;O</span>
         </button>
         <button class="nav-btn" onclick="switchTab('sectors')" data-tab="sectors">
-          <span class="nav-icon">▦</span> Sectors
+          <span class="nav-icon">▦</span><span class="nav-label">Sectors</span>
+        </button>
+        <button class="nav-btn" onclick="switchTab('morning')" data-tab="morning">
+          <span class="nav-icon">◉</span><span class="nav-label">Morning Brief</span>
         </button>
         <button class="nav-btn" onclick="switchTab('backtest')" data-tab="backtest">
-          <span class="nav-icon">◷</span> Backtest
+          <span class="nav-icon">◷</span><span class="nav-label">Backtest</span>
         </button>
         <button class="nav-btn" onclick="switchTab('analyst')" data-tab="analyst">
-          <span class="nav-icon">◈</span> AI Analyst
+          <span class="nav-icon">✦</span><span class="nav-label">AI Analyst</span>
         </button>
         <button class="nav-btn" onclick="switchTab('tradelog')" data-tab="tradelog">
-          <span class="nav-icon">≡</span> Trade Log
+          <span class="nav-icon">≡</span><span class="nav-label">Trade Log</span>
         </button>
         <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
-          <span class="nav-icon">◆</span> Paper Trading
+          <span class="nav-icon">◆</span><span class="nav-label">Paper Trading</span>
         </button>
       </nav>
-
-      <!-- Market status -->
-      <div class="sb-market">
-        <div class="market-status-dot" id="mpulse"></div>
-        <span id="mstatus-txt">Checking...</span>
-      </div>
-      <div class="sb-clock" id="clock">--:--:-- IST</div>
-
-      <!-- Tickers -->
-      <div class="sb-tickers">
-        <div class="sbt" onclick="switchTab('nifty')">
-          <div class="sbt-name">NIFTY 50</div>
-          <div class="sbt-val" id="h-nifty">--,---</div>
-          <div class="sbt-chg" id="h-nifty-c">--</div>
-        </div>
-        <div class="sbt" onclick="switchTab('nifty')">
-          <div class="sbt-name">BANK NIFTY</div>
-          <div class="sbt-val" id="h-bnifty">--,---</div>
-          <div class="sbt-chg" id="h-bnifty-c">--</div>
-        </div>
-        <div class="sbt">
-          <div class="sbt-name">INDIA VIX</div>
-          <div class="sbt-val vix" id="h-vix">--.-</div>
-          <div class="sbt-chg" id="h-vix-c">--</div>
-        </div>
-        <div class="sbt">
-          <div class="sbt-name">USD/INR</div>
-          <div class="sbt-val" id="h-usdinr">--.-</div>
-          <div class="sbt-chg">Forex</div>
-        </div>
-      </div>
-
     </aside>
 
     <!-- ═══════════ MAIN ═══════════ -->
@@ -122,7 +135,85 @@
       </div>
 
       <!-- ══════ TAB: NIFTY LIVE ══════ -->
-      <section class="tab-pane active" id="tab-nifty">
+      <!-- ══════ TAB: DASHBOARD ══════ -->
+      <section class="tab-pane active" id="tab-dash">
+        <div class="dash">
+
+          <!-- row 1: chart (with full view) + auto-scanner, side by side -->
+          <div class="dash-top">
+            <div class="panel dash-chart" id="dash-chart">
+              <div class="chart-head">
+                <div class="ch-id">
+                  <div class="ch-title" id="ch-title">NIFTY 50</div>
+                  <div class="ch-price" id="ch-price">--</div>
+                  <div class="ch-sub" id="ch-sub"></div>
+                </div>
+                <div class="ch-tools">
+                  <button class="btn btn-ghost btn-sm" id="rp-toggle" title="Replay the chart bar by bar">⏵ Replay</button>
+                  <div class="seg" id="ch-tf"></div>
+                  <button class="btn btn-ghost btn-sm" id="ch-full" title="Chart full view (Esc to exit)">⛶ Full view</button>
+                </div>
+              </div>
+              <div class="chart-ovl" id="ch-ovl"></div>
+              <div class="rp-bar" id="rp-bar" style="display:none">
+                <button class="rp-btn" id="rp-back" title="Back one bar">⏴</button>
+                <button class="rp-btn rp-play" id="rp-play" title="Play / pause">▶</button>
+                <button class="rp-btn" id="rp-fwd" title="Forward one bar">⏵</button>
+                <select id="rp-speed" class="mini-select" title="Speed">
+                  <option value="1">1x</option><option value="2">2x</option><option value="5">5x</option><option value="10">10x</option><option value="20">20x</option>
+                </select>
+                <input type="range" id="rp-slider" min="0" max="0" value="0" />
+                <span class="rp-label" id="rp-label">click a candle to jump there</span>
+                <button class="btn btn-ghost btn-sm" id="rp-exit">Exit replay</button>
+              </div>
+              <div class="ch-main" id="ch-main"></div>
+              <div class="ch-rsi" id="ch-rsi"></div>
+            </div>
+
+            <div class="panel dash-scan">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Auto-Scanner <span class="pill">every 5 min</span></div>
+                  <div class="panel-sub" id="scan-status">Starting…</div>
+                </div>
+                <button class="btn btn-primary btn-sm" id="scan-now">Scan now</button>
+              </div>
+              <div class="scan-progress"><div id="scan-bar"></div></div>
+              <div class="scan-table-wrap">
+                <table class="scan-table">
+                  <thead><tr><th>Symbol</th><th>Price</th><th>Chg</th><th>Call</th><th>Conf</th></tr></thead>
+                  <tbody id="scan-body"></tbody>
+                </table>
+              </div>
+              <form id="scan-add" class="scan-add">
+                <input id="scan-add-input" list="sym-list" placeholder="Add symbol…" autocomplete="off" oninput="debounceSearch(event, 'sym-list')" />
+                <button class="btn btn-ghost btn-sm" type="submit">Add</button>
+              </form>
+              <label class="scan-opt"><input type="checkbox" id="scan-sound" /> Beep on a new BUY CE / BUY PE</label>
+            </div>
+          </div>
+
+          <!-- row 2: strategy check, news and option chain side by side -->
+          <div class="dash-bottom">
+            <div class="panel dash-card">
+              <div class="panel-head"><div class="panel-title">Strategy check</div></div>
+              <div class="side-pane" id="side-sc"></div>
+            </div>
+            <div class="panel dash-card">
+              <div class="panel-head"><div class="panel-title">News</div></div>
+              <div class="side-pane" id="side-news"></div>
+            </div>
+            <div class="panel dash-card">
+              <div class="panel-head"><div class="panel-title">Option chain</div></div>
+              <div class="side-pane" id="side-oc"></div>
+            </div>
+          </div>
+        </div>
+        <div class="toast" id="toast"></div>
+      </section>
+
+      <!-- ══════ TAB: NIFTY LIVE ══════ -->
+      <section class="tab-pane" id="tab-nifty">
         <div class="signal-hero">
           <div class="sh-label" id="sh-sym-label">NIFTY 50 — INTRADAY SIGNAL</div>
           <div class="sh-price up" id="n-price">--,---.-</div>
@@ -1032,6 +1123,7 @@
       </section>
 
     </main>
+  </div>
   </div>
 
 </body>

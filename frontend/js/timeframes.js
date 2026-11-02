@@ -27,3 +27,17 @@ export const BT_DEFAULT_PERIOD = {
 export const BT_PERIOD_DAYS = {
   '1mo': 22, '3mo': 66, '6mo': 132, '1y': 252, '2y': 504, '5y': 1260, '10y': 2520, 'max': 5040,
 };
+
+// Chart view timeframe buttons. Yahoo serves ~7 days of 1m and ~60 days of 5m-30m data;
+// the backend clamps longer requests, so these ranges are the most history available.
+export const CHART_TF = [
+  { key: '1m',  label: '1m',  interval: '1m',  range: '5d',  intraday: true },
+  { key: '5m',  label: '5m',  interval: '5m',  range: '1mo', intraday: true },
+  { key: '15m', label: '15m', interval: '15m', range: '1mo', intraday: true },
+  { key: '30m', label: '30m', interval: '30m', range: '1mo', intraday: true },
+  { key: '1h',  label: '1H',  interval: '1h',  range: '6mo', intraday: true },
+  { key: '1d',  label: 'D',   interval: '1d',  range: '2y',  intraday: false },
+  { key: '1wk', label: 'W',   interval: '1wk', range: '10y', intraday: false },
+  { key: '1mo', label: 'M',   interval: '1mo', range: 'max', intraday: false },
+  { key: '1y',  label: 'Y',   interval: '1y',  range: 'max', intraday: false },
+];

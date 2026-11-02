@@ -65,6 +65,36 @@ export const Indicators = {
     return atr;
   },
 
+  /** Wilder ADX (trend strength 0-100). Values before the series has warmed up are 0. */
+  adx(candles, period = 14) {
+    const n = candles.length, out = new Array(n).fill(0);
+    let tr14 = 0, p14 = 0, m14 = 0;
+    const dx = [];
+    for (let i = 1; i < n; i++) {
+      const c = candles[i], p = candles[i - 1];
+      const tr = Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c));
+      const up = c.h - p.h, dn = p.l - c.l;
+      const pdm = up > dn && up > 0 ? up : 0, mdm = dn > up && dn > 0 ? dn : 0;
+      if (i <= period) { tr14 += tr; p14 += pdm; m14 += mdm; }
+      else { tr14 = tr14 - tr14 / period + tr; p14 = p14 - p14 / period + pdm; m14 = m14 - m14 / period + mdm; }
+      if (i >= period) {
+        const pdi = 100 * p14 / (tr14 || 1), mdi = 100 * m14 / (tr14 || 1);
+        dx.push(100 * Math.abs(pdi - mdi) / ((pdi + mdi) || 1));
+        if (dx.length === period) out[i] = dx.reduce((a, b) => a + b, 0) / period;
+        else if (dx.length > period) out[i] = (out[i - 1] * (period - 1) + dx[dx.length - 1]) / period;
+      }
+    }
+    return out;
+  },
+
+  /** MACD(12,26,9): {macd, signal, hist} arrays aligned with `closes`. */
+  macd(closes, fast = 12, slow = 26, sig = 9) {
+    const ef = Indicators.ema(closes, fast), es = Indicators.ema(closes, slow);
+    const macd = ef.map((v, i) => v - es[i]);
+    const signal = Indicators.ema(macd, sig);
+    return { macd, signal, hist: macd.map((v, i) => v - signal[i]) };
+  },
+
   /** Indian market transaction charges */
   charges(entryPrice, exitPrice, qty, segment = 'intraday') {
     const bv = entryPrice * qty;

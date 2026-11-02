@@ -727,10 +727,11 @@ Respond ONLY in JSON:
 
     DOM.setHtml('sector-grid', d.sectors.map(s => {
       const p = parseFloat((s.change || '0').replace('%', ''));
-      const c = p > 1.5 ? 's-su' : p > 0.3 ? 'su' : p > -0.3 ? 'sn' : p > -1.5 ? 'sd' : 's-sd';
-      return `<div class="sector-box ${c}" onclick="qs('${DOM.esc(s.name)}');switchTab('signals');generateSignal()">
-        <div class="sec-name">${DOM.esc(s.name)}</div>
-        <div class="sec-chg">${DOM.esc(s.change || '--')}</div>
+      // class names must match styles.css: .sbox with .s-su/.s-u/.s-n/.s-d/.s-sd heat colours, .sn name, .sc change
+      const c = p > 1.5 ? 's-su' : p > 0.3 ? 's-u' : p > -0.3 ? 's-n' : p > -1.5 ? 's-d' : 's-sd';
+      return `<div class="sbox ${c}" onclick="qs('${DOM.esc(s.name)}');switchTab('signals');generateSignal()">
+        <div class="sn">${DOM.esc(s.name)}</div>
+        <div class="sc">${DOM.esc(s.change || '--')}</div>
       </div>`;
     }).join(''));
 

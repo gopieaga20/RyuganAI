@@ -90,3 +90,26 @@ Single file organized into comment-delimited modules, driven by tab navigation (
 - **No authentication anywhere** — paper trading endpoints and the Angel One broker session are shared/global, not per-user.
 - **CORS is `*`** and DB credentials in `backend/.env` (currently tracked as modified in git status — verify it isn't committed with real secrets).
 - Angel One session/master-contract are process-level singletons — fine for single-instance deployment, not safe for multi-worker/horizontal scaling without external session storage.
+
+---
+
+## v3 dashboard (chart, scanner, CE/PE calls)
+
+The default page is **Dashboard** (`#tab-dash`), built from these ES modules in `frontend/js/`:
+
+| Module | Role |
+|---|---|
+| `dash.js` | Wires the page: scanner table, chart toolbar, side panel (strategy check / news / option chain) |
+| `chart-view.js` | lightweight-charts v4 candlestick chart: 9 timeframes (`CHART_TF` in `timeframes.js`), EMA/VWAP/Bollinger/volume/RSI overlays, BOS/CHoCH markers, FVG zones, SL/target lines, live last-price tick, and **bar replay** (`startReplay`/`stepReplay`/`playReplay`: the chart, overlays and strategy check use only the candles up to the replay bar) |
+| `strategies.js` | `evaluate(candles, {news})`: weighted vote of EMA trend, RSI, VWAP, BOS/CHoCH structure, FVG retest, volume and news -> BUY CE / BUY PE / WAIT (needs ADX >= 20 and a score of 3+). `combine()` requires the 5m chart not to contradict the 15m call |
+| `smc-structure.js` | Swing pivots (confirmed k bars late, no look-ahead), BOS, CHoCH, fair value gaps |
+| `scanner.js` | Every 5 minutes (09:15-15:30 IST Mon-Fri, aligned to candle closes) scans the universe (default: 3 indices + 12 stocks, editable, kept in localStorage), 4 symbols at a time; also looks up the ATM option contract for each call |
+| `scan-utils.js`, `candles.js` | Pure helpers (symbol mapping, session change, IST time, VWAP, Yahoo JSON -> candles) |
+
+`ui.css` is loaded after `styles.css`: it re-maps the old colour tokens to a dark palette (light via `data-theme="light"`, toggle in the top bar) and styles the new top bar / nav rail / dashboard.
+
+Backend: `/api/yahoo-chart/{symbol}` now keeps a 60-second in-memory cache and allows 4 concurrent Yahoo requests.
+
+The scan runs in the browser, so it only runs while the page is open. The calls use standard indicator rules; backtests did not show a proven edge, and the UI says so.
+
+Tests: `node --test frontend/tests/*.test.mjs` (strategies, structure, helpers) and `pytest backend/tests`.

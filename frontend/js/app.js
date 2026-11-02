@@ -20,6 +20,7 @@ import {
 } from './paper-trading.js';
 import { openStockBrowser, closeStockBrowser } from './stock-browser.js';
 import { loadOptionChain, runFoAnalysis } from './option-chain.js';
+import { initDash, onThemeChange } from './dash.js';
 
 /* ═══════════════════════════════════════════
    MODULE: LOADING
@@ -57,7 +58,7 @@ tick();
 /* ═══════════════════════════════════════════
    MODULE: TAB NAVIGATION
 ═══════════════════════════════════════════ */
-const ALL_TABS = ['nifty', 'signals', 'morning', 'fo', 'sectors', 'backtest', 'analyst', 'tradelog', 'paper'];
+const ALL_TABS = ['dash', 'nifty', 'signals', 'morning', 'fo', 'sectors', 'backtest', 'analyst', 'tradelog', 'paper'];
 export function switchTab(t) {
   if (!ALL_TABS.includes(t)) return;
   // Update sidebar nav active state
@@ -67,13 +68,14 @@ export function switchTab(t) {
   // Switch visible tab pane
   document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
   document.getElementById(`tab-${t}`)?.classList.add('active');
+  window.dispatchEvent(new Event('resize'));   // charts size themselves to their pane
   // Refresh paper trading data when switching to that tab
   if (t === 'paper') refreshPaperTrading();
 }
 
 const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
 export function switchBTTab(t) {
-  document.querySelectorAll('.sub-tab').forEach((el, i) => {
+  document.querySelectorAll('.bt-tab').forEach((el, i) => {
     el.classList.toggle('active', BT_TABS[i] === t);
   });
   BT_TABS.forEach(id => {
@@ -89,6 +91,7 @@ export function switchBTTab(t) {
 window.addEventListener('load', async () => {
   // Initialize watchlist
   WL.init();
+  initDash();
 
   // Initial data fetches
   try { await refreshPaperTrading(); await _fetchDayStats(); } catch { }
@@ -111,6 +114,16 @@ window.addEventListener('load', async () => {
    (both static markup and runtime-generated HTML strings).
 ═══════════════════════════════════════════ */
 window.switchTab = switchTab;
+
+/* Theme: dark by default, light on request; the choice is remembered. */
+export function toggleTheme() {
+  const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('ryugan_theme', next); } catch { /* private mode */ }
+  onThemeChange();
+}
+window.toggleTheme = toggleTheme;
+
 window.refreshNiftySignal = refreshNiftySignal;
 window.executeCurrentSignal = executeCurrentSignal;
 window.fetchGlobalCues = fetchGlobalCues;

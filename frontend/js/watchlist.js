@@ -5,7 +5,7 @@ import { getPrice, _toYahooSym } from './market-data.js';
 
 /* ═══════════════════════════════════════════
    MODULE: WATCHLIST MANAGER
-   Multi-list, sessionStorage-backed watchlist.
+   Multi-list watchlist, kept in localStorage.
 ═══════════════════════════════════════════ */
 export const WL = (() => {
   const SK = 'ryugan_wl';
@@ -18,12 +18,12 @@ export const WL = (() => {
 
   function load() {
     try {
-      const raw = sessionStorage.getItem(SK);
+      const raw = localStorage.getItem(SK);
       if (raw) state = JSON.parse(raw);
       if (!state.lists || Object.keys(state.lists).length === 0) state.lists = { ...DEFAULTS };
     } catch { state = { lists: { ...DEFAULTS }, active: 'Nifty 50' }; }
   }
-  function save() { sessionStorage.setItem(SK, JSON.stringify(state)); }
+  function save() { try { localStorage.setItem(SK, JSON.stringify(state)); } catch { /* private mode: lists live for this session only */ } }
 
   function renderSelect() {
     const sel = document.getElementById('wl-list-select');
