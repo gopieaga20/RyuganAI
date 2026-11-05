@@ -69,6 +69,9 @@ export function switchTab(t) {
   document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
   document.getElementById(`tab-${t}`)?.classList.add('active');
   window.dispatchEvent(new Event('resize'));   // charts size themselves to their pane
+  // on the phone the nav is a scrolling bottom bar: keep the active page's button in view
+  const nav = document.querySelector('.sb-nav'), btn = nav?.querySelector('.nav-btn.active');
+  if (nav && btn && nav.scrollWidth > nav.clientWidth) nav.scrollTo({ left: btn.offsetLeft - (nav.clientWidth - btn.offsetWidth) / 2, behavior: 'auto' });
   // Refresh paper trading data when switching to that tab
   if (t === 'paper') refreshPaperTrading();
 }

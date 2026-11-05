@@ -93,34 +93,34 @@
     <aside class="sidebar">
       <nav class="sb-nav">
         <button class="nav-btn active" onclick="switchTab('dash')" data-tab="dash">
-          <span class="nav-icon">▤</span><span class="nav-label">Dashboard</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span><span class="nav-label">Dashboard</span>
         </button>
         <button class="nav-btn" onclick="switchTab('nifty')" data-tab="nifty">
-          <span class="nav-icon">◈</span><span class="nav-label">Nifty Live</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span class="nav-label">Nifty Live</span>
         </button>
         <button class="nav-btn" onclick="switchTab('signals')" data-tab="signals">
-          <span class="nav-icon">⚡</span><span class="nav-label">Signal Engine</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span><span class="nav-label">Signals</span>
         </button>
         <button class="nav-btn" onclick="switchTab('fo')" data-tab="fo">
-          <span class="nav-icon">◎</span><span class="nav-label">F&amp;O</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span><span class="nav-label">F&amp;O</span>
         </button>
         <button class="nav-btn" onclick="switchTab('sectors')" data-tab="sectors">
-          <span class="nav-icon">▦</span><span class="nav-label">Sectors</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg></span><span class="nav-label">Sectors</span>
         </button>
         <button class="nav-btn" onclick="switchTab('morning')" data-tab="morning">
-          <span class="nav-icon">◉</span><span class="nav-label">Morning Brief</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span><span class="nav-label">Brief</span>
         </button>
         <button class="nav-btn" onclick="switchTab('backtest')" data-tab="backtest">
-          <span class="nav-icon">◷</span><span class="nav-label">Backtest</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/><polyline points="12 7 12 12 15 14"/></svg></span><span class="nav-label">Backtest</span>
         </button>
         <button class="nav-btn" onclick="switchTab('analyst')" data-tab="analyst">
-          <span class="nav-icon">✦</span><span class="nav-label">AI Analyst</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span><span class="nav-label">AI Analyst</span>
         </button>
         <button class="nav-btn" onclick="switchTab('tradelog')" data-tab="tradelog">
-          <span class="nav-icon">≡</span><span class="nav-label">Trade Log</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span><span class="nav-label">Trade Log</span>
         </button>
         <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
-          <span class="nav-icon">◆</span><span class="nav-label">Paper Trading</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span class="nav-label">Paper</span>
         </button>
       </nav>
     </aside>
@@ -146,11 +146,13 @@
                 <div class="ch-id">
                   <div class="ch-title" id="ch-title">NIFTY 50</div>
                   <div class="ch-price" id="ch-price">--</div>
+                  <div class="ch-chg" id="ch-chg"></div>
                   <div class="ch-sub" id="ch-sub"></div>
                 </div>
                 <div class="ch-tools">
                   <button class="btn btn-ghost btn-sm" id="rp-toggle" title="Replay the chart bar by bar">⏵ Replay</button>
                   <div class="seg" id="ch-tf"></div>
+                  <button class="btn btn-ghost btn-sm" id="ch-fit" title="Fit the latest bars and auto-scale the price axis">⤢ Fit</button>
                   <button class="btn btn-ghost btn-sm" id="ch-full" title="Chart full view (Esc to exit)">⛶ Full view</button>
                 </div>
               </div>

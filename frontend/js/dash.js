@@ -10,6 +10,7 @@ import { NewsFilter } from './news.js';
 import { computeChainStats } from './option-chain.js';
 import { executePaperTrade } from './paper-trading.js';
 import { isMarketOpen } from './candles.js';
+import { sessionChange } from './scan-utils.js';
 
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 2) => (v == null || !Number.isFinite(v) ? '--' : v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -22,6 +23,12 @@ let sel = { sym: 'NIFTY 50', tf: '15m', candles: [], news: null };
 let chainExpiry = null;
 
 /* ───────────── helpers ───────────── */
+function showChange(candles) {
+  const el = $('ch-chg'); if (!el) return;
+  const pct = sessionChange(candles);
+  el.textContent = pct == null ? '' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+  el.className = 'ch-chg ' + (pct >= 0 ? 'up' : 'down');
+}
 const callChip = (call, big = false) => {
   const cls = call === 'BUY CE' ? 'call-ce' : call === 'BUY PE' ? 'call-pe' : 'call-wait';
   return `<span class="call-chip ${cls}${big ? ' big' : ''}">${DOM.esc(call)}</span>`;
@@ -180,6 +187,8 @@ export async function selectSymbol(sym, tf) {
   sel.sym = (sym || 'NIFTY 50').trim();
   if (tf) sel.tf = tf;
   sel.candles = []; sel.news = null; chainExpiry = null;
+  ChartView.reset(sel.sym);                      // clear the old symbol's chart, levels and gap lines straight away
+  DOM.setText('ch-price', '--'); DOM.setText('ch-chg', ''); DOM.setText('ch-sub', 'Loading…');
   DOM.setText('ch-title', sel.sym.toUpperCase());
   document.querySelectorAll('#ch-tf button').forEach(b => b.classList.toggle('active', b.dataset.tf === sel.tf));
   renderScanTable(); renderStrategyPane();
@@ -205,6 +214,7 @@ export function initDash() {
     const last = candles[candles.length - 1];
     DOM.setText('ch-sub', last ? `${candles.length} candles · ${tf.label}` : '');
     if (last) DOM.setText('ch-price', fmt(last.c));
+    showChange(candles);
     renderStrategyPane();
   });
   // replay controls
@@ -248,6 +258,7 @@ export function initDash() {
     saved[id] = e.target.checked; store.set('ryugan_overlays', JSON.stringify(saved));
     ChartView.setOverlay(id, e.target.checked);
   });
+  $('ch-fit').addEventListener('click', () => ChartView.fit());
   // chart full view (Esc exits)
   const panel = $('dash-chart'), fullBtn = $('ch-full');
   const setFull = on => {

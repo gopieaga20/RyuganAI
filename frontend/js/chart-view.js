@@ -30,6 +30,7 @@ export const ChartView = (() => {
   let fvgLines = [], priceLines = [];
   let state = { sym: null, tf: CHART_TF[2], candles: [], overlays: Object.fromEntries(CHART_OVERLAYS.map(o => [o.id, o.on])), levels: null };
   let unsub = null, loadSeq = 0, onData = null, syncing = false;
+  let legendEl = null, idxByTime = new Map(), ind = null;
   // bar replay: the chart shows candles [0..idx] only, as if the market were at that moment
   const replay = { on: false, idx: 0, playing: false, speed: 1, timer: null, cb: null };
   const cur = () => (replay.on ? state.candles.slice(0, replay.idx + 1) : state.candles);
@@ -53,6 +54,14 @@ export const ChartView = (() => {
     rsiChart = LightweightCharts.createChart(rsiEl, { ...chartOptions(rsiEl.clientHeight || 110), width: rsiEl.clientWidth });
     rsiChart.applyOptions({ rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.1 } } });
     buildSeries();
+    el.style.position = 'relative';
+    legendEl = document.createElement('div');
+    legendEl.className = 'ch-legend';
+    el.appendChild(legendEl);
+    main.subscribeCrosshairMove(param => {
+      const i = param && param.time != null ? idxByTime.get(param.time) : undefined;
+      updateLegend(i ?? cur().length - 1);
+    });
     // keep the two time axes together
     main.timeScale().subscribeVisibleLogicalRangeChange(r => { if (r && !syncing) { syncing = true; rsiChart.timeScale().setVisibleLogicalRange(r); syncing = false; } });
     rsiChart.timeScale().subscribeVisibleLogicalRangeChange(r => { if (r && !syncing) { syncing = true; main.timeScale().setVisibleLogicalRange(r); syncing = false; } });
@@ -93,7 +102,7 @@ export const ChartView = (() => {
 
   function render() {
     const cs = cur(), o = state.overlays;
-    if (!cs.length) { candleS.setData([]); return; }
+    if (!cs.length) { clearAll(); return; }
     candleS.setData(cs.map(c => ({ time: t(c), open: c.o, high: c.h, low: c.l, close: c.c })));
     const upC = css('--up-soft', 'rgba(38,166,154,.45)'), dnC = css('--down-soft', 'rgba(239,83,80,.45)');
     volS.setData(o.vol ? cs.map(c => ({ time: t(c), value: c.v || 0, color: c.c >= c.o ? upC : dnC })) : []);
@@ -108,6 +117,8 @@ export const ChartView = (() => {
     lines.bbM.setData(o.bb ? series(cs, bb.map(b => b.mid), 20) : []);
     lines.bbL.setData(o.bb ? series(cs, bb.map(b => b.lower), 20) : []);
     const rsiVals = Indicators.rsi(closes, 14);
+    idxByTime = new Map(cs.map((c, i) => [t(c), i]));
+    ind = { ema9: Indicators.ema(closes, 9), ema21: Indicators.ema(closes, 21), ema50: Indicators.ema(closes, 50), vwap: intraday ? vwapIst(cs) : null, rsi: rsiVals };
     rsiS.setData(cs.map((c, i) => (i >= 15 && Number.isFinite(rsiVals[i]) ? { time: t(c), value: rsiVals[i] } : { time: t(c) })));
     rsiEl.style.display = o.rsi ? '' : 'none';
     main.applyOptions({ height: el.clientHeight });
@@ -116,6 +127,55 @@ export const ChartView = (() => {
     drawMarkers();
     drawFvg();
     drawLevels();
+    updateLegend(cs.length - 1);
+  }
+
+  /** Remove everything drawn for the previous symbol, so nothing stale can stretch the price scale. */
+  function clearAll() {
+    candleS.setData([]); volS.setData([]); rsiS.setData([]);
+    for (const k of Object.keys(lines)) lines[k].setData([]);
+    candleS.setMarkers([]);
+    for (const x of fvgLines) main.removeSeries(x);
+    fvgLines = [];
+    for (const pl of priceLines) candleS.removePriceLine(pl);
+    priceLines = [];
+    idxByTime = new Map(); ind = null;
+    updateLegend(-1);
+  }
+
+  const n2 = (v, d = 2) => (Number.isFinite(v) ? v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d }) : '--');
+  function updateLegend(i) {
+    if (!legendEl) return;
+    const cs = cur();
+    if (!cs.length || i < 0 || i >= cs.length) { legendEl.innerHTML = state.loading ? `<span class="lg-load">Loading ${state.sym || ''}…</span>` : ''; return; }
+    const c = cs[i], prev = i > 0 ? cs[i - 1].c : c.o, chg = (c.c - prev) / prev * 100, up = c.c >= c.o;
+    const v = c.v ? (c.v >= 1e7 ? (c.v / 1e7).toFixed(2) + 'Cr' : c.v >= 1e5 ? (c.v / 1e5).toFixed(2) + 'L' : c.v >= 1e3 ? (c.v / 1e3).toFixed(1) + 'K' : c.v) : '';
+    const when = new Date(c.ts).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, day: '2-digit', month: 'short', hour: state.tf.intraday ? '2-digit' : undefined, minute: state.tf.intraday ? '2-digit' : undefined, year: state.tf.intraday ? undefined : '2-digit' });
+    let h = `<span class="lg-t">${when}</span><span>O <b>${n2(c.o)}</b></span><span>H <b>${n2(c.h)}</b></span><span>L <b>${n2(c.l)}</b></span>` +
+      `<span>C <b class="${up ? 'lg-up' : 'lg-dn'}">${n2(c.c)}</b></span><span class="${chg >= 0 ? 'lg-up' : 'lg-dn'}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` + (v ? `<span>Vol <b>${v}</b></span>` : '');
+    if (ind && state.overlays.ema) h += `<span class="lg-e9">EMA9 ${n2(ind.ema9[i])}</span><span class="lg-e21">EMA21 ${n2(ind.ema21[i])}</span><span class="lg-e50">EMA50 ${n2(ind.ema50[i])}</span>`;
+    if (ind && ind.vwap && state.overlays.vwap) h += `<span class="lg-vw">VWAP ${n2(ind.vwap[i])}</span>`;
+    if (ind && state.overlays.rsi) h += `<span class="lg-rs">RSI ${n2(ind.rsi[i], 1)}</span>`;
+    legendEl.innerHTML = h;
+  }
+
+  /** Show the most recent bars, with the price axis auto-fitted to them (a manual price-scale drag turns autoscale off). */
+  function fit() {
+    const n = cur().length;
+    if (!main || !n) return;
+    const bars = state.tf.intraday ? 150 : 180;
+    main.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - bars), to: n + 6 });
+    main.priceScale('right').applyOptions({ autoScale: true });
+    rsiChart.priceScale('right').applyOptions({ autoScale: true });
+  }
+
+  /** Switching symbol: drop the old chart at once instead of leaving it up while the new data downloads. */
+  function reset(sym) {
+    if (!main) return;
+    stopReplay(false);
+    state.sym = sym; state.candles = []; state.levels = null; state.loading = true;
+    clearAll();
+    if (unsub) { unsub(); unsub = null; }
   }
 
   function drawMarkers() {
@@ -179,12 +239,13 @@ export const ChartView = (() => {
     state.sym = sym;
     if (tfKey) state.tf = CHART_TF.find(x => x.key === tfKey) || state.tf;
     const seq = ++loadSeq;
-    stopReplay(false);
+    reset(sym);
     const j = await yahooFetch(_toYahooSym(sym), state.tf.interval, state.tf.range);
     if (seq !== loadSeq) return;                       // a newer request replaced this one
+    state.loading = false;
     state.candles = toCandles(j);
     render();
-    main.timeScale().fitContent();
+    fit();
     if (onData) onData(state.candles, state.tf, state.sym);
     startLive();
     return state.candles.length;
@@ -257,7 +318,7 @@ export const ChartView = (() => {
   }
 
   return {
-    init, load, setOverlay, setLevels, applyTheme, resize,
+    init, load, reset, fit, setOverlay, setLevels, applyTheme, resize,
     startReplay, stopReplay, setReplayIdx, stepReplay, playReplay, setReplaySpeed,
     onReplay(cb) { replay.cb = cb; },
     visible: cur,
