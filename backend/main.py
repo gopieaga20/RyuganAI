@@ -698,6 +698,7 @@ class AutoTradeToggle(BaseModel):
 class AutoTradeSettings(BaseModel):
     min_confidence: Optional[int] = Field(default=None, ge=50, le=100)
     max_positions: Optional[int] = Field(default=None, ge=1, le=20)
+    max_trades_per_day: Optional[int] = Field(default=None, ge=1, le=50)
     universe: Optional[list[str]] = Field(default=None, max_length=60)
 
 
@@ -710,10 +711,13 @@ async def autotrade_status(request: Request):
         log = await conn.fetch("SELECT ts, symbol, call, confidence, action, detail, position_id, candle_ts FROM autotrade_log ORDER BY id DESC LIMIT 100")
         pnl = await conn.fetchval("SELECT COALESCE(SUM(pnl - charges), 0) FROM history WHERE source = 'auto'")
         trades = await conn.fetchval("SELECT COUNT(*) FROM history WHERE source = 'auto'")
+        orders_today = await conn.fetchval("SELECT COUNT(*) FROM autotrade_log WHERE action = 'ORDER' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1",
+                                           autotrader.now_ist().date())
     now = autotrader.now_ist()
     return {
         "enabled": cfg["enabled"], "market_open": autotrader.market_open(now),
-        "settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "sl_pct", "tp_pct", "lots", "universe")},
+        "settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "nifty_qty", "universe")},
+        "orders_today": orders_today,
         "state": _autotrade_state, "open_auto_positions": open_auto,
         "closed_auto_trades": trades, "closed_auto_net_pnl": float(pnl),
         "log": [dict(r) for r in log],
@@ -732,7 +736,7 @@ async def autotrade_settings(req: AutoTradeSettings, request: Request):
     if "universe" in patch:
         patch["universe"] = [s.strip().upper() for s in patch["universe"] if s.strip()] or autotrader.DEFAULT_UNIVERSE
     cfg = await autotrader.save_settings(_get_pool(request), patch)
-    return {k: cfg[k] for k in ("min_confidence", "max_positions", "universe")}
+    return {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "universe")}
 
 
 @app.post("/api/autotrade/run")

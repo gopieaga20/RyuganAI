@@ -45,8 +45,8 @@ export async function refreshAutoTrade() {
   DOM.setText('at-closed', String(s.closed_auto_trades));
   const pnl = $('at-pnl'); if (pnl) { pnl.textContent = rupees(s.closed_auto_net_pnl); pnl.style.color = s.closed_auto_net_pnl >= 0 ? 'var(--green)' : 'var(--down)'; }
   const st = s.settings;
-  DOM.setText('at-rules', `Buys the ATM option when confidence ≥ ${st.min_confidence}% · max ${st.max_positions} auto positions · one per stock · stop −${Math.round(st.sl_pct * 100)}% / target +${Math.round(st.tp_pct * 100)}% of the premium · entries 09:30–14:30 IST · no end-of-day square-off (stays open until the stop or target is hit)`);
-  lastLog = s.log || [];
+  DOM.setText('at-rules', `Buys the ATM option when confidence ≥ ${st.min_confidence}% · max ${st.max_trades_per_day} new trades a day · max ${st.max_positions} open · one per stock · Nifty always ${st.nifty_qty} units · stop −${Math.round(st.sl_pct * 100)}% / target +${Math.round(st.tp_pct * 100)}% of the premium · entries 09:30–14:30 IST · no end-of-day square-off (a trade stays open until its stop or target is hit)`);
+  DOM.setText('at-today', `${s.orders_today} / ${st.max_trades_per_day}`);  lastLog = s.log || [];
   renderLog(lastLog);
   document.querySelectorAll('.at-state').forEach(el => { el.textContent = on ? 'ON' : 'OFF'; el.classList.toggle('on', on); });
   window.dispatchEvent(new CustomEvent('autotrade:update'));

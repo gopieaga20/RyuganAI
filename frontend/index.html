@@ -1076,6 +1076,7 @@
           <div class="at-status" id="at-status">Loading…</div>
           <div class="at-rules" id="at-rules"></div>
           <div class="at-stats">
+            <div><span>Auto trades today</span><b id="at-today">0 / 5</b></div>
             <div><span>Open auto positions</span><b id="at-open">0</b></div>
             <div><span>Closed auto trades</span><b id="at-closed">0</b></div>
             <div><span>Auto net P&amp;L (after charges)</span><b id="at-pnl">₹0</b></div>
@@ -1083,13 +1084,6 @@
           <div class="at-warn">The rules behind these calls lost money in a 2-year backtest (about -5.6 bps per trade, profit factor 0.79). This is virtual money and a forward test, not a profit engine. It runs on the server, so it keeps working with the browser closed. Positions marked AUTO below are its trades.</div>
           <div class="at-actions"><button class="btn btn-ghost btn-sm" id="at-preview">Preview what it would do now</button></div>
           <div id="at-preview-out" class="at-preview"></div>
-          <div class="at-logtitle">Recent decisions</div>
-          <div class="tbl-wrap">
-            <table class="dtbl">
-              <thead><tr><th>Time</th><th>Symbol</th><th>Call</th><th>Action</th><th>Detail</th></tr></thead>
-              <tbody id="at-log-body"><tr><td colspan="5" class="empty-cell">Loading…</td></tr></tbody>
-            </table>
-          </div>
         </div>
         <div class="card mb12">
           <div class="pt-section-header">
@@ -1119,6 +1113,18 @@
                   <td colspan="9" class="empty-cell">No active positions.</td>
                 </tr>
               </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card mb12 at-card">
+          <div class="pt-section-header">
+            <span class="card-title" style="margin:0">Auto-trade decisions</span>
+            <span class="muted small">newest first · what the server decided on each scan</span>
+          </div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead><tr><th>Time</th><th>Symbol</th><th>Call</th><th>Action</th><th>Detail</th></tr></thead>
+              <tbody id="at-log-body"><tr><td colspan="5" class="empty-cell">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>

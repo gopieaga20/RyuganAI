@@ -7,7 +7,7 @@ contract with virtual money. It runs on the server, so it keeps working with the
 Safety rules (all enforced in `decide`):
   * OFF until the user turns it on; it only ever touches the paper portfolio, never a broker;
   * confidence >= min_confidence (default 85);
-  * at most max_positions auto positions open at once (default 5);
+  * at most max_trades_per_day new auto orders per day (default 5) and max_positions open at once (default 5);
   * one auto position per underlying at a time, and one order per symbol per candle;
   * entries only inside the entry window (default 09:30-14:30 IST). There is no end-of-day square-off: a position stays
     open until its stop or target is hit (or the user exits it).
@@ -33,14 +33,20 @@ DEFAULTS = {
     "enabled": False,                # opt-in: nothing trades until the user switches it on
     "min_confidence": 85,
     "max_positions": 5,
+    "max_trades_per_day": 5,         # new auto orders per IST trading day
     "sl_pct": 0.30,                  # option stop: -30% of the premium paid
-    "tp_pct": 0.50,                  # option target: +50%
+    "tp_pct": 0.30,                  # option target: +30%
     "lots": 1,
+    "nifty_qty": 130,                # Nifty options are always bought in this quantity (2 lots of 65)
     "entry_from_min": 9 * 60 + 30,   # IST minutes since midnight
     "entry_to_min": 14 * 60 + 30,
     "min_days_to_expiry": 1,         # skip contracts that expire today
     "universe": DEFAULT_UNIVERSE,
 }
+
+# Only these can be changed by the user (through the API); everything else always comes from the code defaults above,
+# so an old saved value can never override a rule change.
+USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe"}
 
 LTP_TRIES = 3
 LTP_RETRY_SLEEP = 1.5
@@ -139,7 +145,7 @@ def pick_contract(contracts: list, spot: float, today: dt.date, opt_type: str, m
     return min(pool, key=lambda c: (abs(c["strike"] - spot), c["strike"]))
 
 
-def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False) -> tuple:
+def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0) -> tuple:
     """Return (take_it, reason). The first failing rule is the reason."""
     if not result.get("ok", False) or result.get("call") not in ("BUY CE", "BUY PE"):
         return False, result.get("note") or "no call"
@@ -148,6 +154,8 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
     m = minutes(now)
     if not (cfg["entry_from_min"] <= m <= cfg["entry_to_min"]):
         return False, "outside the entry window"
+    if orders_today >= cfg["max_trades_per_day"]:
+        return False, f"daily limit reached ({orders_today} auto trades today, max {cfg['max_trades_per_day']})"
     if len(open_auto) >= cfg["max_positions"]:
         return False, f"already {len(open_auto)} auto positions open (max {cfg['max_positions']})"
     und = underlying_of(result["sym"])
@@ -174,6 +182,7 @@ class Store:
     """Database access used by the cycle; PgStore implements it, tests use an in-memory version."""
     async def open_auto_positions(self) -> list: raise NotImplementedError
     async def acted_on(self, symbol: str, candle_ts: int) -> bool: raise NotImplementedError
+    async def orders_today(self, day: dt.date) -> int: raise NotImplementedError
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
 
@@ -210,6 +219,7 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
 
     results = await asyncio.gather(*(one(s) for s in cfg["universe"]))
     decisions = []
+    placed_today = await store.orders_today(now.date())
     previewed = []                      # a dry run counts what it WOULD open, so the position limit still applies
     # strongest calls first, so the position limit goes to the best ones
     for r in sorted(results, key=lambda x: (x.get("call") == "WAIT", -(x.get("confidence") or 0))):
@@ -218,11 +228,13 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
         if r.get("call") in ("BUY CE", "BUY PE"):
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
-            ok, why = decide(r, cfg, open_auto, now, acted)
+            ok, why = decide(r, cfg, open_auto, now, acted, placed_today)
             if not ok:
                 row["detail"] = why
             else:
                 row.update(await _order(store, cfg, deps, r, now, dry))
+                if row["action"] in ("ORDER", "WOULD ORDER"):
+                    placed_today += 1
                 if row["action"] == "WOULD ORDER":
                     previewed.append({"id": -1, "symbol": row["detail"].split(" ")[0]})
             await store.log(row)
@@ -232,6 +244,13 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             await store.log(row)
         decisions.append(row)
     return decisions
+
+
+def order_qty(und: str, lot: int, cfg: dict) -> int:
+    """Units to buy: Nifty is always cfg['nifty_qty'] (rounded to whole lots, at least one); everything else is cfg['lots'] lots."""
+    if und == "NIFTY" and cfg.get("nifty_qty"):
+        return max(1, round(cfg["nifty_qty"] / lot)) * lot
+    return lot * cfg["lots"]
 
 
 async def _order(store: Store, cfg: dict, deps: Deps, r: dict, now: dt.datetime, dry: bool) -> dict:
@@ -252,7 +271,7 @@ async def _order(store: Store, cfg: dict, deps: Deps, r: dict, now: dt.datetime,
             await asyncio.sleep(LTP_RETRY_SLEEP)
     if not ltp or ltp <= 0:
         return {"action": "SKIP", "detail": f"no live price for {contract['symbol']}"}
-    qty = lot * cfg["lots"]
+    qty = order_qty(und, lot, cfg)
     sl, tp = round(ltp * (1 - cfg["sl_pct"]), 2), round(ltp * (1 + cfg["tp_pct"]), 2)
     if dry:
         return {"action": "WOULD ORDER", "detail": f"{contract['symbol']} x{qty} @ {ltp:.2f} (SL {sl}, TP {tp})"}
@@ -281,6 +300,11 @@ class PgStore(Store):
             rows = await conn.fetch("SELECT id, symbol FROM positions WHERE source = 'auto'")
         return [dict(r) for r in rows]
 
+    async def orders_today(self, day: dt.date) -> int:
+        async with self.pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM autotrade_log WHERE action = 'ORDER' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1", day))
+
     async def acted_on(self, symbol: str, candle_ts: int) -> bool:
         async with self.pool.acquire() as conn:
             return bool(await conn.fetchval(
@@ -300,23 +324,36 @@ class PgStore(Store):
             await conn.execute("DELETE FROM autotrade_log WHERE id < (SELECT COALESCE(MAX(id), 0) - 500 FROM autotrade_log)")
 
 
-async def load_settings(pool) -> dict:
+def merge_settings(raw: Optional[str]) -> dict:
+    """Code defaults, overridden only by the user-changeable keys found in the stored JSON."""
     cfg = dict(DEFAULTS)
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT value FROM app_settings WHERE key = 'autotrade'")
-    if row:
+    if raw:
         try:
-            cfg.update(json.loads(row["value"]))
-        except (ValueError, TypeError):
+            stored = json.loads(raw)
+            cfg.update({k: v for k, v in stored.items() if k in USER_KEYS})
+        except (ValueError, TypeError, AttributeError):
             pass
     return cfg
 
 
+async def _stored(pool) -> Optional[str]:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM app_settings WHERE key = 'autotrade'")
+    return row["value"] if row else None
+
+
+async def load_settings(pool) -> dict:
+    return merge_settings(await _stored(pool))
+
+
 async def save_settings(pool, patch: dict) -> dict:
-    cfg = await load_settings(pool)
-    cfg.update(patch)
+    try:
+        stored = {k: v for k, v in json.loads(await _stored(pool) or "{}").items() if k in USER_KEYS}
+    except (ValueError, TypeError, AttributeError):
+        stored = {}
+    stored.update({k: v for k, v in patch.items() if k in USER_KEYS})
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO app_settings (key, value) VALUES ('autotrade', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            json.dumps(cfg))
-    return cfg
+            json.dumps(stored))
+    return merge_settings(json.dumps(stored))

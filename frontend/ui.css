@@ -514,3 +514,5 @@ body.chart-full-open { overflow: hidden; }
 .ch-call-conf { font-family: var(--font-mono); font-size: 11px; color: var(--tx-2); }
 .ch-call-src { font-size: 10px; color: var(--tx-3); }
 @media (max-width: 700px) { .tb-auto span:first-child { display: none; } .tb-auto { padding: 4px 6px; } }
+
+.at-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }

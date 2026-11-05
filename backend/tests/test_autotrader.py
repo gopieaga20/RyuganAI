@@ -119,6 +119,9 @@ class MemStore(at.Store):
     async def acted_on(self, symbol, candle_ts):
         return any(l["symbol"] == symbol and l["candle_ts"] == candle_ts and l["action"] == "ORDER" for l in self.logs)
 
+    async def orders_today(self, day):
+        return sum(1 for l in self.logs if l["action"] == "ORDER")
+
     async def place(self, symbol, qty, price, sl, tp):
         if self.refuse:
             raise RuntimeError("Insufficient margin")
@@ -166,7 +169,7 @@ def test_cycle_buys_the_atm_option_with_the_configured_stop_and_target(patch_sca
     assert len(store.positions) == 1                                    # TCS at 70% is below 85
     p = store.positions[0]
     assert p["symbol"].startswith("NIFTY") and p["symbol"].endswith("PE")
-    assert p["qty"] == 65 and p["sl"] == 70.0 and p["tp"] == 150.0
+    assert p["qty"] == 130 and p["sl"] == 70.0 and p["tp"] == 130.0       # Nifty: always 130 units; stop -30%, target +30%
     orders = [d for d in out if d["action"] == "ORDER"]
     assert len(orders) == 1 and orders[0]["position_id"] == 1
 
@@ -175,7 +178,7 @@ def test_cycle_never_exceeds_the_position_limit_and_prefers_the_strongest(patch_
     syms = [f"S{i}" for i in range(8)]
     patch_scan({s: call(s, "BUY CE", 85 + i, 1300.0, ts=i) for i, s in enumerate(syms)})
     store = MemStore()
-    run(at.run_cycle(store, {**CFG, "universe": syms}, make_deps(), now=MON_10AM))
+    run(at.run_cycle(store, {**CFG, "universe": syms, "max_trades_per_day": 99}, make_deps(), now=MON_10AM))
     assert len(store.positions) == 5
     bought = {at.underlying_from_contract(p["symbol"]) for p in store.positions}
     assert bought == {"S7", "S6", "S5", "S4", "S3"}                     # the five highest confidences
@@ -226,7 +229,7 @@ def test_scan_errors_are_isolated():
 def test_dry_run_also_respects_the_position_limit(patch_scan):
     syms = [f"S{i}" for i in range(8)]
     patch_scan({s: call(s, "BUY CE", 90, 1300.0, ts=i) for i, s in enumerate(syms)})
-    out = run(at.run_cycle(MemStore(), {**CFG, "universe": syms}, make_deps(), now=MON_10AM, dry=True))
+    out = run(at.run_cycle(MemStore(), {**CFG, "universe": syms, "max_trades_per_day": 99}, make_deps(), now=MON_10AM, dry=True))
     assert sum(1 for d in out if d["action"] == "WOULD ORDER") == 5
 
 
@@ -241,3 +244,47 @@ def test_a_flaky_price_is_retried(patch_scan):
     store = MemStore()
     run(at.run_cycle(store, {**CFG, "universe": ["RELIANCE"]}, deps, now=MON_10AM))
     assert len(store.positions) == 1 and store.positions[0]["price"] == 101.0
+
+
+# ───────────── daily trade limit, Nifty quantity, settings ─────────────
+def test_defaults_are_the_requested_rules():
+    d = at.DEFAULTS
+    assert d["sl_pct"] == 0.30 and d["tp_pct"] == 0.30 and d["max_trades_per_day"] == 5 and d["nifty_qty"] == 130
+    assert d["min_confidence"] == 85 and d["max_positions"] == 5
+
+
+def test_decide_enforces_the_daily_trade_limit():
+    assert at.decide(call(), CFG, [], MON_10AM, orders_today=4)[0]
+    ok, why = at.decide(call(), CFG, [], MON_10AM, orders_today=5)
+    assert not ok and "daily limit" in why
+
+
+def test_only_five_orders_a_day_even_with_free_slots(patch_scan):
+    syms = [f"S{i}" for i in range(9)]
+    patch_scan({s: call(s, "BUY CE", 90, 1300.0, ts=i) for i, s in enumerate(syms)})
+    store = MemStore()
+    cfg = {**CFG, "universe": syms, "max_positions": 20}
+    run(at.run_cycle(store, cfg, make_deps(), now=MON_10AM))
+    assert len(store.positions) == 5
+    # a later scan the same day (some positions already closed) must still respect the day's count
+    store.positions.clear()
+    patch_scan({s: call(s, "BUY CE", 90, 1300.0, ts=100 + i) for i, s in enumerate(syms)})
+    out = run(at.run_cycle(store, cfg, make_deps(), now=MON_10AM))
+    assert len(store.positions) == 0 and all("daily limit" in d["detail"] for d in out if d["call"] == "BUY CE")
+
+
+def test_nifty_is_always_130_units_and_others_one_lot():
+    assert at.order_qty("NIFTY", 65, at.DEFAULTS) == 130
+    assert at.order_qty("NIFTY", 75, at.DEFAULTS) == 150            # a changed lot size: nearest whole number of lots
+    assert at.order_qty("BANKNIFTY", 30, at.DEFAULTS) == 30
+    assert at.order_qty("RELIANCE", 500, at.DEFAULTS) == 500
+    assert at.order_qty("NIFTY", 65, {**at.DEFAULTS, "nifty_qty": 0}) == 65
+
+
+def test_old_saved_values_cannot_override_the_rules():
+    import json
+    stale = json.dumps({"enabled": True, "tp_pct": 0.5, "sl_pct": 0.1, "nifty_qty": 50, "max_positions": 3, "min_confidence": 90})
+    cfg = at.merge_settings(stale)
+    assert cfg["enabled"] is True and cfg["max_positions"] == 3 and cfg["min_confidence"] == 90      # user-changeable: kept
+    assert cfg["tp_pct"] == 0.30 and cfg["sl_pct"] == 0.30 and cfg["nifty_qty"] == 130                # rule values: from the code
+    assert at.merge_settings("not json")["tp_pct"] == 0.30 and at.merge_settings(None)["enabled"] is False
