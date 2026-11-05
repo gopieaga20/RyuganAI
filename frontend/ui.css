@@ -124,7 +124,7 @@ input::placeholder, textarea::placeholder { color: var(--tx-3); }
 .bt-tab.active { background: var(--clr-blue-lt); color: var(--accent); }
 
 /* ═══ SHELL: top bar + nav rail ═══ */
-.app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; overflow: clip; }   /* clip: focus or scrollIntoView can never shift the whole app out of view */
 .layout { flex: 1; min-height: 0; height: auto; }
 
 .topbar {
