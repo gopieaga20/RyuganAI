@@ -18,7 +18,7 @@ export const CHART_OVERLAYS = [
   { id: 'rsi',     label: 'RSI',         on: true },
   { id: 'struct',  label: 'BOS / CHoCH', on: true },
   { id: 'fvg',     label: 'FVG zones',   on: true },
-  { id: 'signals', label: 'Signals',     on: false },
+  { id: 'signals', label: 'Signals',     on: true },
 ];
 
 const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -31,6 +31,7 @@ export const ChartView = (() => {
   let state = { sym: null, tf: CHART_TF[2], candles: [], overlays: Object.fromEntries(CHART_OVERLAYS.map(o => [o.id, o.on])), levels: null };
   let unsub = null, loadSeq = 0, onData = null, syncing = false;
   let legendEl = null, idxByTime = new Map(), ind = null;
+  let autoMarks = [];            // [{ts, call}] where the auto-trader placed an order for this symbol
   // bar replay: the chart shows candles [0..idx] only, as if the market were at that moment
   const replay = { on: false, idx: 0, playing: false, speed: 1, timer: null, cb: null };
   const cur = () => (replay.on ? state.candles.slice(0, replay.idx + 1) : state.candles);
@@ -200,8 +201,18 @@ export const ChartView = (() => {
         prev = r.ok ? r.call : 'WAIT';
       }
     }
+    if (cs.length) {
+      // auto-trader orders: pin each to the last candle that started at or before the signal candle
+      for (const m of autoMarks) {
+        let lo = 0, hi = cs.length - 1, at = -1;
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (cs[mid].ts <= m.ts) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+        if (at < 0 || m.ts - cs[at].ts > 24 * 3600e3) continue;
+        const ce = m.call === 'BUY CE';
+        marks.push({ time: t(cs[at]), position: ce ? 'belowBar' : 'aboveBar', shape: 'square', color: '#f5c542', text: 'AUTO ' + (ce ? 'CE' : 'PE'), size: 2 });
+      }
+    }
     marks.sort((a, b) => a.time - b.time);
-    candleS.setMarkers(marks.slice(-80));
+    candleS.setMarkers(marks.slice(-90));
   }
 
   function drawFvg() {
@@ -305,6 +316,8 @@ export const ChartView = (() => {
   }
   function setReplaySpeed(x) { replay.speed = x; if (replay.playing) playReplay(true); else emitReplay(); }
 
+  function setAutoMarks(list) { autoMarks = list || []; if (main) drawMarkers(); }
+
   function setOverlay(id, on) { state.overlays[id] = on; render(); }
   function setLevels(levels) { state.levels = levels; if (main) drawLevels(); }
   function applyTheme() {
@@ -318,7 +331,7 @@ export const ChartView = (() => {
   }
 
   return {
-    init, load, reset, fit, setOverlay, setLevels, applyTheme, resize,
+    init, load, reset, fit, setOverlay, setLevels, setAutoMarks, applyTheme, resize,
     startReplay, stopReplay, setReplayIdx, stepReplay, playReplay, setReplaySpeed,
     onReplay(cb) { replay.cb = cb; },
     visible: cur,

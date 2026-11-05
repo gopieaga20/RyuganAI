@@ -78,6 +78,9 @@
       </div>
     </div>
     <div class="tb-right">
+      <label class="tb-auto" title="Auto paper-trading (virtual money, runs on the server)">
+        <span>AUTO</span><span class="at-switch-wrap sm"><input type="checkbox" class="at-toggle" /><span class="at-slider"></span></span>
+      </label>
       <div class="tb-scan" title="Auto-scan every 5 minutes"><span class="tb-scan-dot"></span><span id="top-scan">Scanner starting…</span></div>
       <div class="tb-market">
         <div class="market-status-dot" id="mpulse"></div>
@@ -147,6 +150,7 @@
                   <div class="ch-title" id="ch-title">NIFTY 50</div>
                   <div class="ch-price" id="ch-price">--</div>
                   <div class="ch-chg" id="ch-chg"></div>
+                  <div class="ch-call" id="ch-call" title="Current call for this symbol"></div>
                   <div class="ch-sub" id="ch-sub"></div>
                 </div>
                 <div class="ch-tools">
@@ -192,6 +196,10 @@
                 <button class="btn btn-ghost btn-sm" type="submit">Add</button>
               </form>
               <label class="scan-opt"><input type="checkbox" id="scan-sound" /> Beep on a new BUY CE / BUY PE</label>
+              <div class="scan-auto-row">
+                <label class="at-switch-wrap" title="Server-side auto paper-trading on/off"><input type="checkbox" class="at-toggle" /><span class="at-slider"></span></label>
+                <div><b>Auto paper-trade</b> <span class="at-state">…</span><div class="muted small">Buys the ATM option on 85%+ calls. <a href="#" onclick="switchTab('paper'); return false;">Rules &amp; log</a></div></div>
+              </div>
             </div>
           </div>
 
@@ -1056,6 +1064,31 @@
           <div class="stat-card">
             <div class="sc-l">Win Rate</div>
             <div class="sc-v" id="pt-win-rate">--%</div>
+          </div>
+        </div>
+        <div class="card mb12 at-card">
+          <div class="pt-section-header">
+            <span class="card-title" style="margin:0">Auto paper-trading <span class="pill">server-side</span></span>
+            <label class="at-switch-wrap" title="Turn automatic virtual trading on or off">
+              <input type="checkbox" id="at-switch" class="at-toggle" /><span class="at-slider"></span>
+            </label>
+          </div>
+          <div class="at-status" id="at-status">Loading…</div>
+          <div class="at-rules" id="at-rules"></div>
+          <div class="at-stats">
+            <div><span>Open auto positions</span><b id="at-open">0</b></div>
+            <div><span>Closed auto trades</span><b id="at-closed">0</b></div>
+            <div><span>Auto net P&amp;L (after charges)</span><b id="at-pnl">₹0</b></div>
+          </div>
+          <div class="at-warn">The rules behind these calls lost money in a 2-year backtest (about -5.6 bps per trade, profit factor 0.79). This is virtual money and a forward test, not a profit engine. It runs on the server, so it keeps working with the browser closed. Positions marked AUTO below are its trades.</div>
+          <div class="at-actions"><button class="btn btn-ghost btn-sm" id="at-preview">Preview what it would do now</button></div>
+          <div id="at-preview-out" class="at-preview"></div>
+          <div class="at-logtitle">Recent decisions</div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead><tr><th>Time</th><th>Symbol</th><th>Call</th><th>Action</th><th>Detail</th></tr></thead>
+              <tbody id="at-log-body"><tr><td colspan="5" class="empty-cell">Loading…</td></tr></tbody>
+            </table>
           </div>
         </div>
         <div class="card mb12">

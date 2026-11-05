@@ -44,7 +44,7 @@ export function renderPTPositions() {
   tb.innerHTML = State.ptPositions.map(p => {
     const color = p.type === 'LONG' ? 'var(--green)' : 'var(--down)';
     return `<tr id="pt-row-${p.id}">
-      <td style="font-weight:600">${DOM.esc(p.symbol)}</td>
+      <td style="font-weight:600">${DOM.esc(p.symbol)}${p.source === 'auto' ? ' <span class="auto-badge">AUTO</span>' : ''}</td>
       <td style="color:${color};font-weight:600">${DOM.esc(p.type)}</td>
       <td>${p.qty}</td>
       <td style="font-family:var(--font-mono)">${p.entry_price.toFixed(2)}</td>

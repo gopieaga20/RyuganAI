@@ -11,6 +11,7 @@ import { computeChainStats } from './option-chain.js';
 import { executePaperTrade } from './paper-trading.js';
 import { isMarketOpen } from './candles.js';
 import { sessionChange } from './scan-utils.js';
+import { autoOrdersFor } from './autotrade.js';
 
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 2) => (v == null || !Number.isFinite(v) ? '--' : v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -23,6 +24,13 @@ let sel = { sym: 'NIFTY 50', tf: '15m', candles: [], news: null };
 let chainExpiry = null;
 
 /* ───────────── helpers ───────────── */
+/** The current call for the shown symbol, next to the price: the scanner's 15m+5m call when there is one, else this chart's. */
+function showCall(call, confidence, source) {
+  const el = $('ch-call'); if (!el) return;
+  if (!call) { el.innerHTML = ''; return; }
+  el.innerHTML = `${callChip(call)} <span class="ch-call-conf">${confidence}%</span><span class="ch-call-src">${DOM.esc(source)}</span>`;
+}
+
 function showChange(candles) {
   const el = $('ch-chg'); if (!el) return;
   const pct = sessionChange(candles);
@@ -83,6 +91,10 @@ function renderStrategyPane() {
   const vis = ChartView.visible();                         // in replay mode: only the candles shown so far
   const chart = vis.length >= 60 ? evaluate(vis, { intraday: tf.intraday, news: sel.news?.headlines?.length ? sel.news.sentiment : null }) : null;
   ChartView.setLevels(chart?.ok && chart.call !== 'WAIT' ? chart.levels : null);
+  if (scan?.ok && !ChartView.replaying) showCall(scan.call, scan.confidence, '15m + 5m');
+  else if (chart?.ok) showCall(chart.call, chart.confidence, tf.label + (ChartView.replaying ? ' · replay' : ''));
+  else showCall(null);
+  ChartView.setAutoMarks(autoOrdersFor(sel.sym));
 
   let html = `<div class="sc-head"><div class="sc-sym">${DOM.esc(sel.sym)}</div></div>`;
   if (scan?.ok && !ChartView.replaying) {       // the scanner call is about NOW; hide it while replaying the past
@@ -294,6 +306,7 @@ export function initDash() {
       if (el) { el.innerHTML = `${callChip(r.call)} <b>${DOM.esc(r.sym)}</b> · ${r.confidence}% confidence`; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 6000); }
     }
   });
+  window.addEventListener('autotrade:update', () => ChartView.setAutoMarks(autoOrdersFor(sel.sym)));
   renderScanTable();
   selectSymbol(sel.sym);
   Scanner.start();

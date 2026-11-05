@@ -21,6 +21,7 @@ import {
 import { openStockBrowser, closeStockBrowser } from './stock-browser.js';
 import { loadOptionChain, runFoAnalysis } from './option-chain.js';
 import { initDash, onThemeChange } from './dash.js';
+import { initAutoTrade, refreshAutoTrade } from './autotrade.js';
 
 /* ═══════════════════════════════════════════
    MODULE: LOADING
@@ -73,7 +74,7 @@ export function switchTab(t) {
   const nav = document.querySelector('.sb-nav'), btn = nav?.querySelector('.nav-btn.active');
   if (nav && btn && nav.scrollWidth > nav.clientWidth) nav.scrollTo({ left: btn.offsetLeft - (nav.clientWidth - btn.offsetWidth) / 2, behavior: 'auto' });
   // Refresh paper trading data when switching to that tab
-  if (t === 'paper') refreshPaperTrading();
+  if (t === 'paper') { refreshPaperTrading(); refreshAutoTrade(); }
 }
 
 const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
@@ -95,6 +96,7 @@ window.addEventListener('load', async () => {
   // Initialize watchlist
   WL.init();
   initDash();
+  initAutoTrade();
 
   // Initial data fetches
   try { await refreshPaperTrading(); await _fetchDayStats(); } catch { }
