@@ -47,6 +47,7 @@ except ImportError:
 
 from nse_client import get_fo_underlyings
 from db import ResilientPool
+import autotrader
 
 load_dotenv()
 
@@ -73,15 +74,74 @@ async def lifespan(app: FastAPI):
     else:
         print("       Starting without DB: paper trading answers 503 until PostgreSQL is reachable, then reconnects by itself.")
     watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
+    auto_task = asyncio.create_task(_autotrade_loop(pool))
     yield
     master_task.cancel()
-    watcher_task.cancel()
-    try:
-        await watcher_task
-    except asyncio.CancelledError:
-        pass
+    for task in (watcher_task, auto_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await pool.close()
     print("PostgreSQL pool closed.")
+
+
+async def _autotrade_deps() -> "autotrader.Deps":
+    async def candles(sym, interval, rng):
+        resp = await get_yahoo_chart(_to_price_symbol(sym), interval, rng)
+        return autotrader.payload_to_candles(json.loads(resp.body))
+
+    async def headlines(key):
+        data = await get_news(q=key, limit=8)
+        return data.get("headlines", [])
+
+    def contracts(und):
+        return get_option_contracts(und)
+
+    def lot(und):
+        return get_lot_sizes().get(und)
+
+    return autotrader.Deps(fetch_candles=candles, fetch_headlines=headlines, get_contracts=contracts,
+                           get_lot_size=lot, fetch_ltp=_fetch_ltp)
+
+
+_autotrade_state = {"last_run": None, "next_run": None, "running": False}
+
+
+async def _run_autotrade_cycle(pool, dry=False, now=None):
+    if _autotrade_state["running"]:
+        return []
+    _autotrade_state["running"] = True
+    try:
+        cfg = await autotrader.load_settings(pool)
+        store = autotrader.PgStore(pool, _open_position)
+        out = await autotrader.run_cycle(store, cfg, await _autotrade_deps(), now=now, dry=dry)
+        _autotrade_state["last_run"] = time.time()
+        return out
+    finally:
+        _autotrade_state["running"] = False
+
+
+async def _autotrade_loop(pool):
+    """Every 5 minutes (just after the candle closes): if auto-trading is on and the market is open, run a cycle."""
+    last_error = None
+    while True:
+        wait = autotrader.seconds_to_next_run(time.time())
+        _autotrade_state["next_run"] = time.time() + wait
+        await asyncio.sleep(wait)
+        try:
+            cfg = await autotrader.load_settings(pool)
+            if cfg["enabled"] and autotrader.market_open(autotrader.now_ist()):
+                await _run_autotrade_cycle(pool)
+            last_error = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            detail = str(getattr(e, "detail", e))
+            if detail != last_error:
+                print(f"[WARN] auto-trader cycle failed: {detail}")
+                last_error = detail
 
 
 def compute_margin(qty: int, price: float) -> float:
@@ -178,10 +238,10 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
             charges = CHARGE_PER_LEG * 2
             await conn.execute(
                 """INSERT INTO history
-                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                 pos["symbol"], pos["type"], pos["qty"],
-                pos["entry_price"], exit_price, pnl, charges, reason, now
+                pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"]
             )
     return pnl
 
@@ -271,7 +331,7 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
         await asyncio.sleep(_SL_TP_POLL_SECONDS)
 
 
-async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type, product, price_symbol) -> tuple:
+async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type, product, price_symbol, source='manual') -> tuple:
     """Block margin, take the entry charge and insert the position. Caller holds a transaction.
     Returns (position id, margin). Raises HTTPException(400) if funds are short."""
     margin = required_margin(symbol, pos_type, qty, price)
@@ -288,10 +348,10 @@ async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type,
         margin, CHARGE_PER_LEG
     )
     row = await conn.fetchrow(
-        """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol, order_type, product, margin)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
+        """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol, order_type, product, margin, source)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id""",
         symbol, pos_type, qty, price, sl, tp, datetime.datetime.now(datetime.timezone.utc),
-        price_symbol, order_type, product, margin
+        price_symbol, order_type, product, margin, source
     )
     return row["id"], margin
 
@@ -386,6 +446,25 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS autotrade_log (
+                id          SERIAL PRIMARY KEY,
+                ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                symbol      TEXT NOT NULL,
+                call        TEXT NOT NULL,
+                confidence  INTEGER NOT NULL DEFAULT 0,
+                action      TEXT NOT NULL,
+                detail      TEXT NOT NULL DEFAULT '',
+                position_id INTEGER,
+                candle_ts   BIGINT
+            )
+        """)
         # Safe migration: add new columns if they don't exist on old tables
         for stmt in [
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
@@ -393,6 +472,8 @@ async def _ensure_schema(pool: asyncpg.Pool):
             "ALTER TABLE history   ADD COLUMN IF NOT EXISTS charges NUMERIC(10,2) NOT NULL DEFAULT 0.00",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS price_symbol TEXT",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS margin NUMERIC(14,2)",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE history   ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'",
         ]:
             await conn.execute(stmt)
         # Seed default portfolio row
@@ -582,6 +663,7 @@ async def reset_portfolio(request: Request):
         async with conn.transaction():
             await conn.execute("DELETE FROM positions")
             await conn.execute("DELETE FROM orders")
+            await conn.execute("DELETE FROM autotrade_log")
             await conn.execute("DELETE FROM history")
             await conn.execute(
                 "UPDATE portfolio SET capital = 1000000.00, used_margin = 0.00, total_pnl = 0.00 WHERE id = 1"
@@ -607,6 +689,65 @@ async def modify_position(position_id: int, req: ModifyPositionRequest, request:
             new_sl, new_tp, position_id
         )
     return {"status": "success", "sl": new_sl, "tp": new_tp}
+
+
+class AutoTradeToggle(BaseModel):
+    enabled: bool
+
+
+class AutoTradeSettings(BaseModel):
+    min_confidence: Optional[int] = Field(default=None, ge=50, le=100)
+    max_positions: Optional[int] = Field(default=None, ge=1, le=20)
+    universe: Optional[list[str]] = Field(default=None, max_length=60)
+
+
+@app.get("/api/autotrade/status")
+async def autotrade_status(request: Request):
+    pool = _get_pool(request)
+    cfg = await autotrader.load_settings(pool)
+    async with pool.acquire() as conn:
+        open_auto = await conn.fetchval("SELECT COUNT(*) FROM positions WHERE source = 'auto'")
+        log = await conn.fetch("SELECT ts, symbol, call, confidence, action, detail, position_id, candle_ts FROM autotrade_log ORDER BY id DESC LIMIT 100")
+        pnl = await conn.fetchval("SELECT COALESCE(SUM(pnl - charges), 0) FROM history WHERE source = 'auto'")
+        trades = await conn.fetchval("SELECT COUNT(*) FROM history WHERE source = 'auto'")
+    now = autotrader.now_ist()
+    return {
+        "enabled": cfg["enabled"], "market_open": autotrader.market_open(now),
+        "settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "sl_pct", "tp_pct", "lots", "universe")},
+        "state": _autotrade_state, "open_auto_positions": open_auto,
+        "closed_auto_trades": trades, "closed_auto_net_pnl": float(pnl),
+        "log": [dict(r) for r in log],
+    }
+
+
+@app.post("/api/autotrade/enable")
+async def autotrade_enable(req: AutoTradeToggle, request: Request):
+    cfg = await autotrader.save_settings(_get_pool(request), {"enabled": req.enabled})
+    return {"enabled": cfg["enabled"]}
+
+
+@app.post("/api/autotrade/settings")
+async def autotrade_settings(req: AutoTradeSettings, request: Request):
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "universe" in patch:
+        patch["universe"] = [s.strip().upper() for s in patch["universe"] if s.strip()] or autotrader.DEFAULT_UNIVERSE
+    cfg = await autotrader.save_settings(_get_pool(request), patch)
+    return {k: cfg[k] for k in ("min_confidence", "max_positions", "universe")}
+
+
+@app.post("/api/autotrade/run")
+async def autotrade_run(request: Request, dry: bool = True, as_if_open: bool = False):
+    """Run one scan now. `dry=true` (default) only reports what it WOULD order; `dry=false` really orders,
+    and only if auto-trading is switched on. `as_if_open=true` (dry runs only) evaluates the entry window as if
+    it were 10:00 IST today, to preview what would happen during market hours."""
+    pool = _get_pool(request)
+    if not dry:
+        cfg = await autotrader.load_settings(pool)
+        if not cfg["enabled"]:
+            raise HTTPException(status_code=400, detail="Auto-trading is off. Switch it on first, or run with dry=true.")
+    now = autotrader.now_ist().replace(hour=10, minute=0) if (dry and as_if_open) else None
+    decisions = await _run_autotrade_cycle(pool, dry=dry, now=now)
+    return {"dry": dry, "decisions": decisions}
 
 
 @app.get("/api/paper/stats")
