@@ -46,6 +46,7 @@ except ImportError:
     _angel_broker = None
 
 from nse_client import get_fo_underlyings
+from db import ResilientPool
 
 load_dotenv()
 
@@ -62,31 +63,25 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022").str
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create the asyncpg pool on startup, teardown on shutdown."""
-    watcher_task = None
+    """Set up the database pool (self-healing, see db.py) and the SL/TP watcher; tear them down on shutdown."""
     # Warm the Angel scrip master in the background so the first stock/option search is instant.
     master_task = asyncio.create_task(asyncio.to_thread(load_master_contract))
-    try:
-        pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-        app.state.pool = pool
-        await _ensure_schema(pool)
+    pool = ResilientPool(DATABASE_URL, on_ready=_ensure_schema)
+    app.state.pool = pool
+    if await pool.connect():
         print("[OK] PostgreSQL connected and schema verified.")
-        watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
-    except Exception as e:
-        print(f"[WARN] Database connection failed: {e}")
-        print("       Starting without DB - paper trading endpoints will return 503.")
-        app.state.pool = None
+    else:
+        print("       Starting without DB: paper trading answers 503 until PostgreSQL is reachable, then reconnects by itself.")
+    watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
     yield
     master_task.cancel()
-    if watcher_task:
-        watcher_task.cancel()
-        try:
-            await watcher_task
-        except asyncio.CancelledError:
-            pass
-    if app.state.pool:
-        await app.state.pool.close()
-        print("PostgreSQL pool closed.")
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
+    await pool.close()
+    print("PostgreSQL pool closed.")
 
 
 def compute_margin(qty: int, price: float) -> float:
@@ -251,6 +246,7 @@ _SL_TP_POLL_SECONDS = 20
 async def _sl_tp_watcher(pool: asyncpg.Pool):
     """Background loop: auto square-off any open position whose SL/TP has been breached,
     independent of whether a browser tab is open."""
+    last_error = None
     while True:
         try:
             async with pool.acquire() as conn:
@@ -266,7 +262,12 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(f"[WARN] SL/TP watcher error: {e}")
+            detail = getattr(e, "detail", e)
+            if str(detail) != last_error:               # say it once per distinct problem, not every 20 seconds
+                print(f"[WARN] SL/TP watcher error: {detail}")
+                last_error = str(detail)
+        else:
+            last_error = None
         await asyncio.sleep(_SL_TP_POLL_SECONDS)
 
 
@@ -436,14 +437,10 @@ async def health():
     return {"status": "ok"}
 
 
-def _get_pool(request: Request) -> asyncpg.Pool:
-    pool = request.app.state.pool
-    if pool is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Database not available. Check DATABASE_URL and PostgreSQL connection."
-        )
-    return pool
+def _get_pool(request: Request) -> ResilientPool:
+    """The shared pool. It connects lazily and reconnects after a dropped connection, so this never fails by itself;
+    a database that is really down shows up as a 503 from acquire()."""
+    return request.app.state.pool
 
 # ─────────────────────────────────────────────
 # PYDANTIC MODELS
