@@ -319,6 +319,8 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                 if reason:
                     await _close_position(pool, pos["id"], ltp, reason)
             await _fill_pending_orders(pool)
+            if _angel_broker:
+                _angel_broker.refresh_master_if_stale()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -511,11 +513,20 @@ async def revalidate_static_files(request: Request, call_next):
     return response
 
 
+_STARTED_AT = time.time()
+
+
 @app.get("/api/health")
-async def health():
-    """Liveness check — deliberately doesn't touch the DB, so a deploy platform's
-    health check reflects whether the process is up, not whether Postgres is."""
-    return {"status": "ok"}
+async def health(request: Request):
+    """Liveness check. It does not query the database (a deploy platform's health check should reflect whether the
+    process is up), but it reports what the process knows, which is the first thing to look at when something stops working."""
+    pool = request.app.state.pool
+    info = {"status": "ok", "uptime_s": round(time.time() - _STARTED_AT), "db_connected": bool(pool and pool.connected)}
+    try:
+        info["angel"] = _angel_broker.session_info() if _angel_broker else None
+    except Exception:
+        info["angel"] = None
+    return info
 
 
 def _get_pool(request: Request) -> ResilientPool:
@@ -578,13 +589,18 @@ async def get_portfolio(request: Request):
 
 
 @app.get("/api/paper/history")
-async def get_history(request: Request):
+async def get_history(request: Request, page: int = 1, page_size: int = 25):
+    """Closed trades, newest first, one page at a time."""
     pool = _get_pool(request)
+    page_size = max(5, min(100, page_size))
     async with pool.acquire() as conn:
+        total = int(await conn.fetchval("SELECT COUNT(*) FROM history"))
+        pages = max(1, -(-total // page_size))
+        page = max(1, min(page, pages))
         hist = await conn.fetch(
-            "SELECT * FROM history ORDER BY exit_time DESC LIMIT 100"
+            "SELECT * FROM history ORDER BY exit_time DESC, id DESC LIMIT $1 OFFSET $2", page_size, (page - 1) * page_size
         )
-    return {"history": [dict(h) for h in hist]}
+    return {"history": [dict(h) for h in hist], "total": total, "page": page, "pages": pages, "page_size": page_size}
 
 
 @app.post("/api/paper/trade")
@@ -695,11 +711,40 @@ class AutoTradeToggle(BaseModel):
     enabled: bool
 
 
+class SymbolSetting(BaseModel):
+    sl_pct: Optional[float] = Field(default=None, ge=0.05, le=0.90)
+    tp_pct: Optional[float] = Field(default=None, ge=0.05, le=3.0)
+    lots: Optional[int] = Field(default=None, ge=1, le=100)
+    enabled: Optional[bool] = None
+
+
 class AutoTradeSettings(BaseModel):
     min_confidence: Optional[int] = Field(default=None, ge=50, le=100)
     max_positions: Optional[int] = Field(default=None, ge=1, le=20)
     max_trades_per_day: Optional[int] = Field(default=None, ge=1, le=50)
+    sl_pct: Optional[float] = Field(default=None, ge=0.05, le=0.90)
+    tp_pct: Optional[float] = Field(default=None, ge=0.05, le=3.0)
+    lots: Optional[int] = Field(default=None, ge=1, le=100)
     universe: Optional[list[str]] = Field(default=None, max_length=60)
+    symbols: Optional[dict[str, SymbolSetting]] = None
+
+
+def _settings_view(cfg: dict) -> dict:
+    """Global values plus one row per symbol in the universe: lot size, the default and the value in force."""
+    lots_map = get_lot_sizes() or {}
+    rows = []
+    for sym in cfg["universe"]:
+        und = autotrader.underlying_of(sym)
+        lot = lots_map.get(und) if und else None
+        sp = autotrader.symbol_params(cfg, und)
+        default_lots = (max(1, round(cfg["nifty_qty"] / lot)) if (und == "NIFTY" and lot and cfg.get("nifty_qty")) else cfg["lots"])
+        rows.append({
+            "symbol": sym, "underlying": und, "lot_size": lot, "tradable": und is not None,
+            "default": {"sl_pct": cfg["sl_pct"], "tp_pct": cfg["tp_pct"], "lots": default_lots},
+            "value": {"sl_pct": sp["sl_pct"], "tp_pct": sp["tp_pct"], "lots": sp["lots"] or default_lots, "enabled": sp["enabled"]},
+        })
+    return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe")},
+            "symbols": rows}
 
 
 @app.get("/api/autotrade/status")
@@ -708,7 +753,7 @@ async def autotrade_status(request: Request):
     cfg = await autotrader.load_settings(pool)
     async with pool.acquire() as conn:
         open_auto = await conn.fetchval("SELECT COUNT(*) FROM positions WHERE source = 'auto'")
-        log = await conn.fetch("SELECT ts, symbol, call, confidence, action, detail, position_id, candle_ts FROM autotrade_log ORDER BY id DESC LIMIT 100")
+        orders = await conn.fetch("SELECT ts, symbol, call, confidence, action, detail, position_id, candle_ts FROM autotrade_log WHERE action = 'ORDER' ORDER BY id DESC LIMIT 100")
         pnl = await conn.fetchval("SELECT COALESCE(SUM(pnl - charges), 0) FROM history WHERE source = 'auto'")
         trades = await conn.fetchval("SELECT COUNT(*) FROM history WHERE source = 'auto'")
         orders_today = await conn.fetchval("SELECT COUNT(*) FROM autotrade_log WHERE action = 'ORDER' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1",
@@ -716,11 +761,12 @@ async def autotrade_status(request: Request):
     now = autotrader.now_ist()
     return {
         "enabled": cfg["enabled"], "market_open": autotrader.market_open(now),
-        "settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "nifty_qty", "universe")},
+        "settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "nifty_qty", "universe", "symbols")},
         "orders_today": orders_today,
         "state": _autotrade_state, "open_auto_positions": open_auto,
         "closed_auto_trades": trades, "closed_auto_net_pnl": float(pnl),
-        "log": [dict(r) for r in log],
+        "orders": [dict(r) for r in orders],
+        "last_scan": await autotrader.load_last_scan(pool),
     }
 
 
@@ -730,13 +776,20 @@ async def autotrade_enable(req: AutoTradeToggle, request: Request):
     return {"enabled": cfg["enabled"]}
 
 
+@app.get("/api/autotrade/settings")
+async def autotrade_get_settings(request: Request):
+    return _settings_view(await autotrader.load_settings(_get_pool(request)))
+
+
 @app.post("/api/autotrade/settings")
 async def autotrade_settings(req: AutoTradeSettings, request: Request):
     patch = {k: v for k, v in req.model_dump().items() if v is not None}
     if "universe" in patch:
         patch["universe"] = [s.strip().upper() for s in patch["universe"] if s.strip()] or autotrader.DEFAULT_UNIVERSE
+    if "symbols" in patch:
+        patch["symbols"] = autotrader.clean_symbols({k: {f: x for f, x in v.items() if x is not None} for k, v in patch["symbols"].items()})
     cfg = await autotrader.save_settings(_get_pool(request), patch)
-    return {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "universe")}
+    return _settings_view(cfg)
 
 
 @app.post("/api/autotrade/run")
@@ -1005,7 +1058,7 @@ async def get_option_chain(underlying: str, expiry: Optional[str] = None, strike
     if spot_info:
         try:
             res = await asyncio.to_thread(
-                client.getMarketData, mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
+                _angel_broker.call_angel, "getMarketData", mode="LTP", exchangeTokens={spot_info["exch"]: [spot_info["token"]]})
             fetched = (res or {}).get("data", {}).get("fetched") or []
             if fetched:
                 spot = float(fetched[0]["ltp"])
@@ -1032,7 +1085,7 @@ async def get_option_chain(underlying: str, expiry: Optional[str] = None, strike
     for i in range(0, len(tokens), 50):  # Angel caps tokens per request
         batch = tokens[i:i + 50]
         try:
-            res = await asyncio.to_thread(client.getMarketData, mode="FULL", exchangeTokens={"NFO": batch})
+            res = await asyncio.to_thread(_angel_broker.call_angel, "getMarketData", mode="FULL", exchangeTokens={"NFO": batch})
             for item in (res or {}).get("data", {}).get("fetched") or []:
                 quotes[item["symbolToken"]] = item
         except Exception as e:
@@ -1084,9 +1137,17 @@ async def get_angel_status():
             "connected": bool(client and _ab._auth_token),
             "master_loaded": _ab._is_loaded,
             "symbols_count": len(_ab._master_lookup),
+            **_ab.session_info(),
         }
     except Exception as e:
         return {"connected": False, "error": str(e)}
+
+
+@app.post("/api/angel/reconnect")
+async def angel_reconnect():
+    """Force a fresh Angel login now (it also happens by itself on a schedule and after any auth error)."""
+    client = await asyncio.to_thread(_angel_broker.get_angel_client, True)
+    return {"connected": bool(client), **_angel_broker.session_info()}
 
 
 @app.get("/api/angel/historical")
@@ -1125,7 +1186,7 @@ async def angel_historical(
 # ─────────────────────────────────────────────
 
 _global_cache: dict = {}
-_GLOBAL_TTL = 120  # 2-minute cache for global cues
+_GLOBAL_TTL = 50  # the page refreshes every 60 s, so a 50 s cache means every refresh sees fresh data
 
 @app.get("/api/global-cues")
 async def get_global_cues():
@@ -1136,7 +1197,7 @@ async def get_global_cues():
     Returns compact JSON structured for the frontend global cues panel.
     """
     now = time.time()
-    if _global_cache.get("fetched_at") and now - _global_cache["fetched_at"] < _GLOBAL_TTL:
+    if _global_cache.get("fetched_at") and now - _global_cache["fetched_at"] < _global_cache.get("ttl", _GLOBAL_TTL):
         return {**_global_cache["data"], "cached": True}
 
     def _pct(c, p):
@@ -1228,10 +1289,14 @@ async def get_global_cues():
         "dxy":        _fmt(dxy),
         "usdinr":     _fmt(inr),
         "bias":       bias,
-        "timestamp":  datetime.datetime.now().strftime("%H:%M:%S IST"),
+        # the server may run in UTC (cloud VMs do), so stamp the time in IST explicitly
+        "timestamp":  autotrader.now_ist().strftime("%d %b %H:%M:%S IST"),
+        "fetched_at": now,
     }
+    missing = sum(1 for k in ("gift_nifty", "dow", "crude", "gold", "dxy", "usdinr") if payload[k]["val"] == "N/A")
     _global_cache["data"] = payload
     _global_cache["fetched_at"] = now
+    _global_cache["ttl"] = _GLOBAL_TTL if missing == 0 else 15       # a partial failure is retried soon, not kept for two minutes
     return {**payload, "cached": False}
 
 

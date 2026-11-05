@@ -17,6 +17,10 @@ from datetime import datetime, timedelta
 _angel_obj = None          # SmartConnect instance (stateful session)
 _auth_token = None         # JWT session token
 _feed_token = None         # WebSocket feed token
+_session_at = 0.0          # when the current session was created
+_last_ok_at = 0.0          # last successful Angel call
+_last_error = ""          # last Angel error text, for /api/health
+_loaded_at = 0.0           # when the scrip master was last (re)loaded
 _master_lookup = {}        # symbol -> {exch, token}
 _is_loaded = False
 _nse_equities = []         # [{symbol, name}, ...] — all NSE cash-market equities
@@ -34,6 +38,8 @@ _CACHE_MAX_AGE = 24 * 3600
 _DOWNLOAD_TIMEOUT = 180
 _RETRY_AFTER = 60
 _next_attempt = 0.0        # monotonic time before which a failed download isn't retried
+_MASTER_REFRESH_AGE = 8 * 3600          # reload the contract list when it is older than this (new expiries, new tokens)
+_MASTER_REFRESH_CACHE_AGE = 6 * 3600    # ...and don't trust a disk copy older than this when doing so
 _bg_loading = False
 
 # ── Session management ────────────────────────────────────────────────────────
@@ -45,18 +51,26 @@ def _get_credentials():
     totp_secret= os.getenv("ANGEL_TOTP_SECRET", "").strip().strip('"')
     return api_key, client_code, password, totp_secret
 
-def get_angel_client():
-    """Return an authenticated SmartConnect object, creating/refreshing as needed."""
-    global _angel_obj, _auth_token, _feed_token
+# Angel's login token stops working after about a day. It used to be kept until the process restarted, and only the exact
+# words "Session Expired" triggered a new login, but Angel answers "Invalid Token", so every Angel call failed from the
+# next morning until the server was restarted. Now the session is renewed on a schedule and on any auth-looking error.
+_SESSION_MAX_AGE = 5 * 3600
+
+
+def get_angel_client(force: bool = False):
+    """Return an authenticated SmartConnect object, logging in again when there is none, it is older than
+    _SESSION_MAX_AGE, or `force` is set."""
+    global _angel_obj, _auth_token, _feed_token, _session_at, _last_error
 
     api_key, client_code, password, totp_secret = _get_credentials()
     if not all([api_key, client_code, password, totp_secret]):
         return None
 
     with _lock:
-        # Already have a session — return it
-        if _angel_obj and _auth_token:
+        fresh = _angel_obj and _auth_token and (time.time() - _session_at) < _SESSION_MAX_AGE
+        if fresh and not force:
             return _angel_obj
+        old = _angel_obj if (_angel_obj and _auth_token and not force) else None
 
         try:
             from SmartApi import SmartConnect # type: ignore
@@ -64,17 +78,64 @@ def get_angel_client():
             totp = pyotp.TOTP(totp_secret).now()
             data = obj.generateSession(client_code, password, totp)
             if not data or not data.get("status"):
+                _last_error = f"login failed: {data}"
                 print("Angel SmartAPI login failed:", data)
-                return None
-
+                return old                      # a scheduled refresh that fails keeps the old session, which may still work
             _angel_obj  = obj
             _auth_token = data["data"]["jwtToken"]
             _feed_token = data["data"].get("feedToken", "")
+            _session_at = time.time()
             print("Angel SmartAPI: logged in successfully.")
             return _angel_obj
         except Exception as e:
+            _last_error = f"login error: {e}"
             print("Angel SmartAPI init error:", e)
+            return old
+
+
+def _is_session_error(x) -> bool:
+    t = str(x).lower()
+    return any(k in t for k in ("invalid token", "session", "expired", "ag8001", "ag8002", "ag8003", "unauthor", "jwt"))
+
+
+def call_angel(method: str, **kwargs):
+    """Call a SmartConnect method; if Angel says the session is bad, log in again and retry once.
+    Returns the response, or None when there is no session. Other errors propagate."""
+    global _last_ok_at, _last_error
+    for attempt in (1, 2):
+        client = get_angel_client()
+        if not client:
             return None
+        try:
+            res = getattr(client, method)(**kwargs)
+        except Exception as e:
+            if attempt == 1 and _is_session_error(e):
+                invalidate_session()
+                continue
+            _last_error = f"{method}: {e}"
+            raise
+        if isinstance(res, dict) and not res.get("status") and attempt == 1 and _is_session_error(res):
+            invalidate_session()
+            continue
+        if isinstance(res, dict) and res.get("status"):
+            _last_ok_at = time.time()
+        elif isinstance(res, dict):
+            _last_error = f"{method}: {res.get('message') or res}"
+        return res
+    return None
+
+
+def session_info() -> dict:
+    now = time.time()
+    return {
+        "logged_in": bool(_angel_obj and _auth_token),
+        "session_age_s": round(now - _session_at) if _session_at else None,
+        "last_ok_s_ago": round(now - _last_ok_at) if _last_ok_at else None,
+        "last_error": _last_error or None,
+        "master_loaded": _is_loaded,
+        "master_age_s": round(now - _loaded_at) if _loaded_at else None,
+    }
+
 
 def invalidate_session():
     """Call this when a session-expired error is detected to force re-login."""
@@ -141,9 +202,9 @@ def _download_resumable(url, attempts=6):
     raise last or IOError("download failed")
 
 
-def _fetch_master():
+def _fetch_master(max_cache_age=None):
     """Master contract list: fresh disk copy, else download (and cache), else a stale disk copy."""
-    data = _read_cache(_CACHE_MAX_AGE)
+    data = _read_cache(_CACHE_MAX_AGE if max_cache_age is None else max_cache_age)
     if data:
         return data
     try:
@@ -168,6 +229,26 @@ def _fetch_master():
         raise
 
 
+def refresh_master_if_stale():
+    """The contract list changes every day (new weekly expiries, new tokens), but it used to be loaded once per process,
+    so a server left running for days stopped finding new option contracts. Reload it when it is old."""
+    global _bg_loading
+    if not _is_loaded or _bg_loading or (time.time() - _loaded_at) < _MASTER_REFRESH_AGE:
+        return False
+
+    def work():
+        global _bg_loading
+        try:
+            with _master_lock:
+                _load_master_contract_locked(force=True)
+        finally:
+            _bg_loading = False
+
+    _bg_loading = True
+    threading.Thread(target=work, daemon=True, name="scrip-master-refresh").start()
+    return True
+
+
 def master_ready() -> bool:
     return _is_loaded
 
@@ -190,14 +271,15 @@ def ensure_master_loading():
     threading.Thread(target=work, daemon=True, name="scrip-master").start()
 
 
-def _load_master_contract_locked():
-    global _is_loaded, _master_lookup, _nse_equities, _options_index, _lot_sizes, _next_attempt
-    if _is_loaded:  # another thread finished the download while we waited for the lock
+def _load_master_contract_locked(force: bool = False):
+    global _is_loaded, _master_lookup, _nse_equities, _options_index, _lot_sizes, _next_attempt, _loaded_at
+    if _is_loaded and not force:  # another thread finished the download while we waited for the lock
         return
     if time.monotonic() < _next_attempt:  # failed recently: don't make every request wait through another attempt
         return
     try:
-        data = _fetch_master()
+        data = _fetch_master(_MASTER_REFRESH_CACHE_AGE if force else None)
+        lookup = {}                      # built on the side and swapped in at the end, so readers never see a half-built table
 
         equities = []
         options = {}
@@ -217,7 +299,7 @@ def _load_master_contract_locked():
                 continue
             if exch in ("NSE", "NFO"):
                 sym = str(item.get("symbol", "")).strip()
-                _master_lookup[sym] = {
+                lookup[sym] = {
                     "exch": exch,
                     "token": str(item.get("token", "")),
                     "name": item.get("name", sym),
@@ -253,7 +335,9 @@ def _load_master_contract_locked():
         _nse_equities = equities
         _options_index = options
         _lot_sizes = lot_sizes
+        _master_lookup = lookup
         _is_loaded = True
+        _loaded_at = time.time()
         print(f"Angel Scrip Master loaded: {len(_master_lookup)} symbols, {len(_nse_equities)} NSE equities, {len(_options_index)} F&O underlyings.")
     except Exception as e:
         _next_attempt = time.monotonic() + _RETRY_AFTER
@@ -433,15 +517,8 @@ def get_quote(symbol: str):
         return None
 
     try:
-        res = client.ltpData(
-            exchange=info["exch"],
-            tradingsymbol=mapped_sym,
-            symboltoken=info["token"],
-        )
+        res = call_angel("ltpData", exchange=info["exch"], tradingsymbol=mapped_sym, symboltoken=info["token"])
         if not (res and res.get("status") and res.get("data")):
-            # Session may have expired — invalidate so next call re-logs in
-            if res and "Session Expired" in str(res):
-                invalidate_session()
             return None
 
         d = res["data"]
@@ -463,8 +540,6 @@ def get_quote(symbol: str):
         }
     except Exception as e:
         print(f"Angel get_quote error for '{symbol}': {e}")
-        if "Session" in str(e):
-            invalidate_session()
         return None
 
 # ── Historical OHLCV (for backtesting) ───────────────────────────────────────
@@ -514,7 +589,7 @@ def _fetch_window(client, info, angel_interval, start, end):
     last = None
     for attempt in range(_THROTTLE_RETRIES + 1):
         try:
-            res = client.getCandleData(historicDataParams=params)
+            res = call_angel("getCandleData", historicDataParams=params)
         except Exception as e:
             last = str(e)
             if "access rate" in last.lower() or "exceeding" in last.lower():
