@@ -516,3 +516,33 @@ body.chart-full-open { overflow: hidden; }
 @media (max-width: 700px) { .tb-auto span:first-child { display: none; } .tb-auto { padding: 4px 6px; } }
 
 .at-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+
+/* ═══ auto-trade settings panel ═══ */
+.at-settings { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.at-set-title { font-family: var(--font-display); font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+.at-set-sub { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--tx-3); margin: 14px 0 6px; }
+.at-set-sub .small { text-transform: none; letter-spacing: 0; }
+.at-set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.at-set-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--tx-3); }
+.at-set-grid input, .as-table input[type=number] { height: 30px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-2); font-family: var(--font-mono); font-size: 12px; width: 100%; }
+.as-table input[type=number] { max-width: 90px; }
+.as-table td { vertical-align: middle; }
+.as-table tr.as-off td:not(:first-child):not(:last-child) { opacity: .45; }
+.at-set-add { display: flex; gap: 8px; margin: 10px 0; max-width: 460px; }
+.at-set-add input { flex: 1; height: 30px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line-2); font-size: 12px; min-width: 0; }
+.at-set-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ═══ pagination ═══ */
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex-wrap: wrap; padding: 10px 2px 2px; font-size: 12px; }
+.pg-info { margin-right: auto; color: var(--tx-3); }
+.pg-btn { min-width: 30px; height: 28px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--tx-2); cursor: pointer; font-size: 12px; }
+.pg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--tx); }
+.pg-btn.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+.pg-btn:disabled { opacity: .4; cursor: default; }
+.pg-gap { color: var(--tx-3); padding: 0 2px; }
+.pg-size { height: 28px; border-radius: 6px; font-size: 12px; margin-left: 6px; }
+@media (max-width: 700px) { .pg-info { flex: 0 0 100%; margin-bottom: 4px; } .as-table input[type=number] { max-width: 70px; } }
+
+/* the global "select { width: 100% }" stretched the page-size menu across the row and clipped its text */
+.pager .pg-size { width: auto; min-width: 104px; flex: none; height: 30px; padding: 0 26px 0 10px; line-height: 28px; font-size: 12px; margin-left: 8px; }

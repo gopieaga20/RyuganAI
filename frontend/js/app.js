@@ -75,6 +75,7 @@ export function switchTab(t) {
   if (nav && btn && nav.scrollWidth > nav.clientWidth) nav.scrollTo({ left: btn.offsetLeft - (nav.clientWidth - btn.offsetWidth) / 2, behavior: 'auto' });
   // Refresh paper trading data when switching to that tab
   if (t === 'paper') { refreshPaperTrading(); refreshAutoTrade(); }
+  if (t === 'nifty') fetchGlobalCues();
 }
 
 const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
@@ -106,6 +107,7 @@ window.addEventListener('load', async () => {
   setInterval(fetchLiveTickers, 60000);
 
   fetchGlobalCues();
+  setInterval(() => { if (!document.hidden) fetchGlobalCues(); }, 60000);   // used to load once and never again
   refreshNiftySignal();
   loadBacktestHistory();
   loadLotSizes().then(applyBtLotSize); // current lot sizes from the exchange list, not hardcoded

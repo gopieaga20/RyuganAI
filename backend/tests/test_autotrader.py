@@ -112,6 +112,10 @@ def test_decide_enforces_max_positions_and_one_per_underlying():
 class MemStore(at.Store):
     def __init__(self, refuse=False):
         self.positions, self.logs, self.refuse = [], [], refuse
+        self.last_scan = None
+
+    async def save_last_scan(self, scan):
+        self.last_scan = scan
 
     async def open_auto_positions(self):
         return list(self.positions)
@@ -281,10 +285,65 @@ def test_nifty_is_always_130_units_and_others_one_lot():
     assert at.order_qty("NIFTY", 65, {**at.DEFAULTS, "nifty_qty": 0}) == 65
 
 
-def test_old_saved_values_cannot_override_the_rules():
+def test_legacy_saved_row_only_carries_over_genuine_user_choices():
     import json
     stale = json.dumps({"enabled": True, "tp_pct": 0.5, "sl_pct": 0.1, "nifty_qty": 50, "max_positions": 3, "min_confidence": 90})
-    cfg = at.merge_settings(stale)
-    assert cfg["enabled"] is True and cfg["max_positions"] == 3 and cfg["min_confidence"] == 90      # user-changeable: kept
-    assert cfg["tp_pct"] == 0.30 and cfg["sl_pct"] == 0.30 and cfg["nifty_qty"] == 130                # rule values: from the code
+    cfg = at.merge_settings(stale, legacy=True)
+    assert cfg["enabled"] is True and cfg["max_positions"] == 3 and cfg["min_confidence"] == 90
+    assert cfg["tp_pct"] == 0.30 and cfg["sl_pct"] == 0.30 and cfg["nifty_qty"] == 130              # old whole-config values ignored
     assert at.merge_settings("not json")["tp_pct"] == 0.30 and at.merge_settings(None)["enabled"] is False
+
+
+def test_new_settings_row_honours_stop_target_lots_and_symbols():
+    import json
+    raw = json.dumps({"sl_pct": 0.2, "tp_pct": 0.6, "lots": 3, "symbols": {"reliance": {"sl_pct": 0.1, "lots": 4}}, "nifty_qty": 1})
+    cfg = at.merge_settings(raw)
+    assert cfg["sl_pct"] == 0.2 and cfg["tp_pct"] == 0.6 and cfg["lots"] == 3
+    assert cfg["symbols"] == {"RELIANCE": {"sl_pct": 0.1, "lots": 4}}
+    assert cfg["nifty_qty"] == 130                                                                      # not user-changeable
+
+
+def test_symbol_overrides_are_validated():
+    cleaned = at.clean_symbols({"tcs": {"sl_pct": 0.2, "tp_pct": 9, "lots": 0, "enabled": False, "evil": 1}, "x": "no", "itc": {"lots": "2"}})
+    assert cleaned == {"TCS": {"sl_pct": 0.2, "enabled": False}, "ITC": {"lots": 2}}      # out-of-range / unknown fields dropped
+    assert at.clean_symbols(None) == {}
+
+
+def test_per_symbol_lots_stop_and_target_are_used(patch_scan):
+    patch_scan({"RELIANCE": call("RELIANCE", "BUY CE", 90), "TCS": call("TCS", "BUY CE", 90, ts=2)})
+    store = MemStore()
+    cfg = {**CFG, "universe": ["RELIANCE", "TCS"], "symbols": {"RELIANCE": {"sl_pct": 0.2, "tp_pct": 0.6, "lots": 3}}}
+    run(at.run_cycle(store, cfg, make_deps(ltp=100.0), now=MON_10AM))
+    rel = next(p for p in store.positions if p["symbol"].startswith("RELIANCE"))
+    tcs = next(p for p in store.positions if p["symbol"].startswith("TCS"))
+    assert rel["qty"] == 3 * 500 and rel["sl"] == 80.0 and rel["tp"] == 160.0                # its own settings
+    assert tcs["qty"] == 500 and tcs["sl"] == 70.0 and tcs["tp"] == 130.0                    # global defaults
+
+
+def test_nifty_own_lots_beats_the_fixed_130():
+    assert at.order_qty("NIFTY", 65, {**at.DEFAULTS, "symbols": {"NIFTY": {"lots": 3}}}) == 195
+    assert at.order_qty("NIFTY", 65, at.DEFAULTS) == 130
+
+
+def test_a_symbol_switched_off_in_settings_is_skipped():
+    cfg = {**CFG, "symbols": {"RELIANCE": {"enabled": False}}}
+    ok, why = at.decide(call("RELIANCE"), cfg, [], MON_10AM)
+    assert not ok and "switched off" in why and at.decide(call("TCS"), cfg, [], MON_10AM)[0]
+
+
+def test_the_last_scan_lists_every_symbol_including_waits(patch_scan):
+    patch_scan({"NIFTY 50": call("NIFTY 50", "BUY PE", 90, 23100.0), "RELIANCE": {**call("RELIANCE", "WAIT", 32), "note": "ADX 12 is below 20"},
+                "TCS": call("TCS", "BUY CE", 70)})
+    store = MemStore()
+    run(at.run_cycle(store, CFG, make_deps(lots={"NIFTY": 65}), now=MON_10AM))
+    rows = {r["symbol"]: r for r in store.last_scan["rows"]}
+    assert set(rows) == {"NIFTY 50", "RELIANCE", "TCS"} and store.last_scan["at"] == MON_10AM.timestamp()
+    assert rows["RELIANCE"]["detail"] == "ADX 12 is below 20" and rows["NIFTY 50"]["action"] == "ORDER"
+    assert rows["TCS"]["detail"].startswith("confidence 70%")
+
+
+def test_a_dry_run_does_not_overwrite_the_last_scan(patch_scan):
+    patch_scan({"RELIANCE": call("RELIANCE", "BUY CE", 90)})
+    store = MemStore()
+    run(at.run_cycle(store, {**CFG, "universe": ["RELIANCE"]}, make_deps(), now=MON_10AM, dry=True))
+    assert store.last_scan is None

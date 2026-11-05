@@ -27,11 +27,45 @@ export async function refreshPaperTrading() {
 
     renderPTOrders(await fetch(CONFIG.PROXY_BASE + '/api/paper/orders', { cache: 'no-store' }).then(r => r.json()).then(d => d.orders).catch(() => []));
 
-    const rHist = await fetch(CONFIG.PROXY_BASE + '/api/paper/history', { cache: 'no-store' });
-    const dHist = await rHist.json();
-    renderPTHistory(dHist.history);
+    await loadPTHistory();
   } catch (e) { console.error('Paper trading fetch error:', e); }
 }
+
+/* ── trade history, one page at a time ── */
+let _histPage = 1, _histSize = 25;
+
+export async function loadPTHistory(page = _histPage) {
+  _histPage = page;
+  const d = await fetch(`${CONFIG.PROXY_BASE}/api/paper/history?page=${_histPage}&page_size=${_histSize}`, { cache: 'no-store' }).then(r => r.json());
+  _histPage = d.page;                       // the server clamps the page (for example after the last page empties)
+  renderPTHistory(d.history);
+  renderPTPager(d);
+}
+
+function renderPTPager(d) {
+  const el = document.getElementById('pt-pager'); if (!el) return;
+  if (!d.total) { el.innerHTML = ''; return; }
+  const from = (d.page - 1) * d.page_size + 1, to = Math.min(d.total, d.page * d.page_size);
+  // a window of page numbers around the current one, with the first and last always reachable
+  const nums = new Set([1, d.pages, d.page - 2, d.page - 1, d.page, d.page + 1, d.page + 2].filter(n => n >= 1 && n <= d.pages));
+  let prev = 0, buttons = '';
+  for (const n of [...nums].sort((a, b) => a - b)) {
+    if (n - prev > 1) buttons += '<span class="pg-gap">…</span>';
+    buttons += `<button type="button" class="pg-btn${n === d.page ? ' active' : ''}" data-page="${n}">${n}</button>`;
+    prev = n;
+  }
+  el.innerHTML = `<span class="pg-info">${from}–${to} of ${d.total} trades</span>
+    <button type="button" class="pg-btn" data-page="${d.page - 1}" ${d.page <= 1 ? 'disabled' : ''}>‹ Prev</button>${buttons}
+    <button type="button" class="pg-btn" data-page="${d.page + 1}" ${d.page >= d.pages ? 'disabled' : ''}>Next ›</button>
+    <select class="pg-size" title="Rows per page">${[10, 25, 50, 100].map(n => `<option value="${n}"${n === d.page_size ? ' selected' : ''}>${n} / page</option>`).join('')}</select>`;
+  if (!el._wired) {
+    el._wired = true;
+    el.addEventListener('click', e => { const b = e.target.closest('button[data-page]'); if (b && !b.disabled) loadPTHistory(+b.dataset.page); });
+    el.addEventListener('change', e => { if (e.target.classList.contains('pg-size')) { _histSize = +e.target.value; loadPTHistory(1); } });
+  }
+}
+
+const _istTime = iso => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 export function renderPTPositions() {
   const tb = document.getElementById('pt-positions-body');
@@ -92,8 +126,8 @@ export function renderPTHistory(hist) {
     const dc = h.type === 'LONG' ? 'var(--green)' : 'var(--down)';
     const pc = h.pnl > 0 ? 'var(--green)' : 'var(--down)';
     return `<tr>
-      <td style="font-size:10px;color:var(--text3)">${DOM.esc(h.exit_time)}</td>
-      <td style="font-weight:600">${DOM.esc(h.symbol)}</td>
+      <td style="font-size:11px;color:var(--text3);white-space:nowrap">${DOM.esc(_istTime(h.exit_time))}</td>
+      <td style="font-weight:600">${DOM.esc(h.symbol)}${h.source === 'auto' ? ' <span class="auto-badge">AUTO</span>' : ''}</td>
       <td style="color:${dc}">${DOM.esc(h.type)}</td>
       <td>${h.qty}</td>
       <td style="font-family:var(--font-mono)">${h.entry_price.toFixed(2)}</td>

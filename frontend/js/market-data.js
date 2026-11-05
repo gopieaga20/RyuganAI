@@ -135,6 +135,7 @@ export async function fetchGlobalCues() {
     return d;
   } catch (e) {
     console.error('fetchGlobalCues error:', e);
+    DOM.setText('gc-ts', 'Update failed, retrying…');
     // Fallback: ask the AI proxy (degrades to algo fallback server-side if no key configured)
     try {
       const prompt = `Search for current global market data: SGX/GIFT Nifty level, Dow Jones, WTI crude oil, USD/INR, Gold MCX, DXY.

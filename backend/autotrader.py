@@ -42,11 +42,16 @@ DEFAULTS = {
     "entry_to_min": 14 * 60 + 30,
     "min_days_to_expiry": 1,         # skip contracts that expire today
     "universe": DEFAULT_UNIVERSE,
+    "symbols": {},                   # per-underlying overrides, e.g. {"RELIANCE": {"sl_pct": .2, "tp_pct": .4, "lots": 2, "enabled": true}}
 }
 
-# Only these can be changed by the user (through the API); everything else always comes from the code defaults above,
-# so an old saved value can never override a rule change.
-USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe"}
+# What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
+USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols"}
+# The first version of the settings row saved the WHOLE config (including old stop/target values), so when it is migrated
+# only the keys that were genuinely user choices are carried over.
+LEGACY_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe"}
+SETTINGS_KEY, LEGACY_SETTINGS_KEY, LAST_SCAN_KEY = "autotrade_v2", "autotrade", "autotrade_last_scan"
+SYMBOL_FIELDS = {"sl_pct": (0.05, 0.90), "tp_pct": (0.05, 3.00), "lots": (1, 100)}
 
 LTP_TRIES = 3
 LTP_RETRY_SLEEP = 1.5
@@ -161,6 +166,8 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
     und = underlying_of(result["sym"])
     if und is None:
         return False, "no NSE option chain for this symbol"
+    if not symbol_params(cfg, und)["enabled"]:
+        return False, f"auto-trading is switched off for {und} in Settings"
     if any(underlying_from_contract(p["symbol"]) == und for p in open_auto):
         return False, f"{und} already has an open auto position"
     if acted_on_candle:
@@ -185,6 +192,7 @@ class Store:
     async def orders_today(self, day: dt.date) -> int: raise NotImplementedError
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
+    async def save_last_scan(self, scan: dict) -> None: return None
 
 
 async def scan_symbol(sym: str, deps: Deps) -> dict:
@@ -224,11 +232,14 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
     # strongest calls first, so the position limit goes to the best ones
     for r in sorted(results, key=lambda x: (x.get("call") == "WAIT", -(x.get("confidence") or 0))):
         row = {"symbol": r["sym"], "call": r.get("call", "WAIT"), "confidence": r.get("confidence", 0),
-               "candle_ts": r.get("candle_ts"), "action": "SKIP", "detail": "", "position_id": None}
+               "candle_ts": r.get("candle_ts"), "action": "SKIP", "detail": r.get("note") or "", "position_id": None,
+               "price": r.get("price"), "score": r.get("score"), "max_score": r.get("maxScore"), "adx": r.get("adx"),
+               "news": r.get("news")}
         if r.get("call") in ("BUY CE", "BUY PE"):
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
             ok, why = decide(r, cfg, open_auto, now, acted, placed_today)
+            row["detail"] = ""
             if not ok:
                 row["detail"] = why
             else:
@@ -243,11 +254,49 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             row["action"] = "ERROR"
             await store.log(row)
         decisions.append(row)
+    if not dry:
+        await store.save_last_scan({"at": now.timestamp(), "rows": decisions})
     return decisions
 
 
+def clean_symbols(raw) -> dict:
+    """Validate per-symbol overrides: keys are underlyings, values may hold sl_pct, tp_pct, lots, enabled. Anything else is dropped."""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if not isinstance(v, dict):
+            continue
+        row = {}
+        for f, (lo, hi) in SYMBOL_FIELDS.items():
+            if v.get(f) is not None:
+                try:
+                    x = float(v[f])
+                except (TypeError, ValueError):
+                    continue
+                if lo <= x <= hi:
+                    row[f] = int(x) if f == "lots" else round(x, 4)
+        if v.get("enabled") is False:
+            row["enabled"] = False
+        if row:
+            out[str(k).strip().upper()] = row
+    return out
+
+
+def symbol_params(cfg: dict, und: Optional[str]) -> dict:
+    """The stop, target, lots and on/off to use for one underlying: its own override, else the global value.
+    `lots` is None when neither an override nor a global rule applies (then Nifty uses its fixed quantity)."""
+    ov = (cfg.get("symbols") or {}).get(und or "", {})
+    return {"sl_pct": ov.get("sl_pct", cfg["sl_pct"]), "tp_pct": ov.get("tp_pct", cfg["tp_pct"]),
+            "lots": ov.get("lots"), "enabled": ov.get("enabled", True) is not False}
+
+
 def order_qty(und: str, lot: int, cfg: dict) -> int:
-    """Units to buy: Nifty is always cfg['nifty_qty'] (rounded to whole lots, at least one); everything else is cfg['lots'] lots."""
+    """Units to buy: the symbol's own lots if set in Settings; else Nifty is always cfg['nifty_qty'] (rounded to whole lots,
+    at least one); everything else is cfg['lots'] lots."""
+    own = symbol_params(cfg, und)["lots"]
+    if own:
+        return int(own) * lot
     if und == "NIFTY" and cfg.get("nifty_qty"):
         return max(1, round(cfg["nifty_qty"] / lot)) * lot
     return lot * cfg["lots"]
@@ -272,7 +321,8 @@ async def _order(store: Store, cfg: dict, deps: Deps, r: dict, now: dt.datetime,
     if not ltp or ltp <= 0:
         return {"action": "SKIP", "detail": f"no live price for {contract['symbol']}"}
     qty = order_qty(und, lot, cfg)
-    sl, tp = round(ltp * (1 - cfg["sl_pct"]), 2), round(ltp * (1 + cfg["tp_pct"]), 2)
+    sp = symbol_params(cfg, und)
+    sl, tp = round(ltp * (1 - sp["sl_pct"]), 2), round(ltp * (1 + sp["tp_pct"]), 2)
     if dry:
         return {"action": "WOULD ORDER", "detail": f"{contract['symbol']} x{qty} @ {ltp:.2f} (SL {sl}, TP {tp})"}
     try:
@@ -316,6 +366,13 @@ class PgStore(Store):
             async with conn.transaction():
                 return await self._open_position(conn, symbol, "LONG", qty, price, sl, tp, "MARKET", "MIS", symbol, source="auto")
 
+    async def save_last_scan(self, scan: dict) -> None:
+        slim = [{k: v for k, v in r.items() if k != "candle_ts"} for r in scan["rows"]]
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                LAST_SCAN_KEY, json.dumps({"at": scan["at"], "rows": slim}, default=str))
+
     async def log(self, row: dict) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -324,36 +381,59 @@ class PgStore(Store):
             await conn.execute("DELETE FROM autotrade_log WHERE id < (SELECT COALESCE(MAX(id), 0) - 500 FROM autotrade_log)")
 
 
-def merge_settings(raw: Optional[str]) -> dict:
+def merge_settings(raw: Optional[str], legacy: bool = False) -> dict:
     """Code defaults, overridden only by the user-changeable keys found in the stored JSON."""
+    allowed = LEGACY_KEYS if legacy else USER_KEYS
     cfg = dict(DEFAULTS)
     if raw:
         try:
             stored = json.loads(raw)
-            cfg.update({k: v for k, v in stored.items() if k in USER_KEYS})
+            cfg.update({k: v for k, v in stored.items() if k in allowed})
         except (ValueError, TypeError, AttributeError):
             pass
+    cfg["symbols"] = clean_symbols(cfg.get("symbols"))
     return cfg
 
 
-async def _stored(pool) -> Optional[str]:
+async def _row(pool, key: str) -> Optional[str]:
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT value FROM app_settings WHERE key = 'autotrade'")
+        row = await conn.fetchrow("SELECT value FROM app_settings WHERE key = $1", key)
     return row["value"] if row else None
 
 
+async def _stored(pool) -> dict:
+    """What the user has saved. Falls back to the legacy row (only its genuine user choices) until the first save."""
+    raw = await _row(pool, SETTINGS_KEY)
+    legacy = False
+    if raw is None:
+        raw, legacy = await _row(pool, LEGACY_SETTINGS_KEY), True
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    allowed = LEGACY_KEYS if legacy else USER_KEYS
+    return {k: v for k, v in data.items() if k in allowed}
+
+
 async def load_settings(pool) -> dict:
-    return merge_settings(await _stored(pool))
+    return merge_settings(json.dumps(await _stored(pool)))
 
 
 async def save_settings(pool, patch: dict) -> dict:
-    try:
-        stored = {k: v for k, v in json.loads(await _stored(pool) or "{}").items() if k in USER_KEYS}
-    except (ValueError, TypeError, AttributeError):
-        stored = {}
+    stored = await _stored(pool)
     stored.update({k: v for k, v in patch.items() if k in USER_KEYS})
+    if "symbols" in stored:
+        stored["symbols"] = clean_symbols(stored["symbols"])
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES ('autotrade', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            json.dumps(stored))
+            "INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            SETTINGS_KEY, json.dumps(stored))
     return merge_settings(json.dumps(stored))
+
+
+async def load_last_scan(pool) -> Optional[dict]:
+    raw = await _row(pool, LAST_SCAN_KEY)
+    try:
+        return json.loads(raw) if raw else None
+    except (ValueError, TypeError):
+        return None

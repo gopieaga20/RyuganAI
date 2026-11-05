@@ -1082,8 +1082,35 @@
             <div><span>Auto net P&amp;L (after charges)</span><b id="at-pnl">₹0</b></div>
           </div>
           <div class="at-warn">The rules behind these calls lost money in a 2-year backtest (about -5.6 bps per trade, profit factor 0.79). This is virtual money and a forward test, not a profit engine. It runs on the server, so it keeps working with the browser closed. Positions marked AUTO below are its trades.</div>
-          <div class="at-actions"><button class="btn btn-ghost btn-sm" id="at-preview">Preview what it would do now</button></div>
+          <div class="at-actions"><button class="btn btn-ghost btn-sm" id="at-settings-btn">⚙ Settings</button> <button class="btn btn-ghost btn-sm" id="at-preview">Preview what it would do now</button></div>
           <div id="at-preview-out" class="at-preview"></div>
+          <div class="at-settings" id="at-settings" style="display:none">
+            <div class="at-set-title">Auto-trade settings</div>
+            <div class="at-set-grid">
+              <label>Min confidence %<input id="as-conf" type="number" min="50" max="100" step="1"></label>
+              <label>Max open positions<input id="as-maxpos" type="number" min="1" max="20" step="1"></label>
+              <label>Max new trades a day<input id="as-maxday" type="number" min="1" max="50" step="1"></label>
+              <label>Default stop-loss %<input id="as-sl" type="number" min="5" max="90" step="1"></label>
+              <label>Default target %<input id="as-tp" type="number" min="5" max="300" step="1"></label>
+              <label>Default lots<input id="as-lots" type="number" min="1" max="100" step="1"></label>
+            </div>
+            <div class="at-set-sub">Per stock <span class="muted small">(stop-loss and target are % of the option premium paid; a stock left at the defaults follows them)</span></div>
+            <div class="tbl-wrap">
+              <table class="dtbl as-table">
+                <thead><tr><th>Trade</th><th>Stock</th><th>Stop-loss %</th><th>Target %</th><th>Lots</th><th>Quantity</th><th></th></tr></thead>
+                <tbody id="as-rows"></tbody>
+              </table>
+            </div>
+            <div class="at-set-add">
+              <input id="as-add" list="sym-list" placeholder="Add a stock to the auto-trade list…" autocomplete="off" oninput="debounceSearch(event, 'sym-list')">
+              <button type="button" class="btn btn-ghost btn-sm" id="as-add-btn">Add</button>
+            </div>
+            <div class="at-set-actions">
+              <button type="button" class="btn btn-primary btn-sm" id="as-save">Save settings</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="as-reset">Reset to defaults</button>
+              <span id="as-msg" class="small"></span>
+            </div>
+          </div>
         </div>
         <div class="card mb12">
           <div class="pt-section-header">
@@ -1118,12 +1145,12 @@
         </div>
         <div class="card mb12 at-card">
           <div class="pt-section-header">
-            <span class="card-title" style="margin:0">Auto-trade decisions</span>
-            <span class="muted small">newest first · what the server decided on each scan</span>
+            <span class="card-title" style="margin:0">Auto-trade: latest scan</span>
+            <span class="muted small" id="at-scan-time">No scan yet</span>
           </div>
           <div class="tbl-wrap">
             <table class="dtbl">
-              <thead><tr><th>Time</th><th>Symbol</th><th>Call</th><th>Action</th><th>Detail</th></tr></thead>
+              <thead><tr><th>Symbol</th><th>Call</th><th>Votes</th><th>Result</th><th>Detail</th></tr></thead>
               <tbody id="at-log-body"><tr><td colspan="5" class="empty-cell">Loading…</td></tr></tbody>
             </table>
           </div>
@@ -1160,6 +1187,7 @@
               </tbody>
             </table>
           </div>
+          <div class="pager" id="pt-pager"></div>
         </div>
       </section>
 
