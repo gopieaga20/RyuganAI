@@ -411,9 +411,9 @@ body.chart-full-open { overflow: hidden; }
    for position:fixed, which pushed the full-view chart off-screen. The dashboard does not animate. */
 #tab-dash, #tab-dash.active { animation: none; transform: none; }
 /* explicit size for full view: left/right alone were not constraining the width in some browsers */
-.dash-chart.full { width: calc(100vw - var(--rail-w)); height: calc(100vh - var(--top-h)); height: calc(100dvh - var(--top-h)); max-width: calc(100vw - var(--rail-w)); }
-@media (max-width: 960px) { .dash-chart.full { width: 100vw; max-width: 100vw; } }
-@media (max-width: 700px) { .dash-chart.full { height: calc(100dvh - var(--top-h) - 56px); } }   /* leave the bottom nav bar visible */
+.dash-chart.full { top: var(--top-h); left: var(--rail-w); right: 0; bottom: 0; width: auto; max-width: none; height: auto; box-sizing: border-box; }
+@media (max-width: 960px) { .dash-chart.full { left: 0; } }
+@media (max-width: 700px) { .dash-chart.full { bottom: 56px; } }   /* leave the bottom nav bar visible */
 
 
 /* ═══ chart legend (hover values) ═══ */
@@ -546,3 +546,61 @@ body.chart-full-open { overflow: hidden; }
 
 /* the global "select { width: 100% }" stretched the page-size menu across the row and clipped its text */
 .pager .pg-size { width: auto; min-width: 104px; flex: none; height: 30px; padding: 0 26px 0 10px; line-height: 28px; font-size: 12px; margin-left: 8px; }
+
+
+/* ═══ LIVE (real-money) page: red on purpose, so it is never mistaken for paper trading ═══ */
+:root { --live: #ff4d4f; --live-rgb: 255, 77, 79; }
+.nav-btn-live { color: var(--live); }
+.nav-btn-live.active { background: rgba(var(--live-rgb), .14); color: var(--live); }
+.nav-btn-live.active::before { background: var(--live); }
+.tb-live { font-size: 10px; font-weight: 800; letter-spacing: .12em; color: #fff; background: var(--live); padding: 5px 10px; border-radius: 999px; text-decoration: none; animation: pulse 1.6s infinite; }
+.lv-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; border: 1px solid var(--line-2); background: var(--surface); }
+.lv-banner.on { background: rgba(var(--live-rgb), .12); border-color: var(--live); }
+.lv-banner.off { border-left: 4px solid var(--tx-3); }
+.lv-banner.on .lv-title { color: var(--live); }
+.lv-title { font-family: var(--font-display); font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+.lv-sub { font-size: 12px; color: var(--tx-2); margin-top: 3px; max-width: 640px; line-height: 1.45; }
+.lv-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.lv-btn-on, .lv-btn-send { background: var(--live); color: #fff; border: 0; font-weight: 700; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+.lv-btn-on:hover, .lv-btn-send:hover { filter: brightness(1.1); }
+.lv-btn-send:disabled { opacity: .45; cursor: not-allowed; }
+.lv-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; margin-bottom: 12px; }
+.lv-funds { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.lv-funds div { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.lv-funds span { display: block; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--tx-3); }
+.lv-funds b { font-family: var(--font-mono); font-size: 14px; }
+.lv-limits-note { color: var(--live); font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.lv-rules { margin-top: 12px; font-size: 11px; line-height: 1.55; color: var(--tx-3); border-left: 3px solid var(--line-2); padding-left: 10px; }
+.lv-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; margin-bottom: 8px; }
+.lv-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--tx-3); }
+.lv-form .lv-wide { grid-column: 1 / -1; }
+.lv-form input, .lv-form select { height: 32px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-2); font-size: 12px; width: 100%; }
+.lv-side { display: flex; gap: 6px; }
+.lv-side { grid-column: 1 / -1; }
+.lv-side .dir-btn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-qty { font-family: var(--font-mono); font-size: 12px; color: var(--tx-2); margin-bottom: 10px; min-height: 16px; }
+.lv-pv { margin-top: 12px; border-radius: 10px; padding: 12px 14px; border: 1px solid var(--line-2); background: var(--surface-2); }
+.lv-pv.ok { border-color: rgba(38, 208, 160, .5); }
+.lv-pv.bad { border-color: rgba(var(--live-rgb), .6); }
+.lv-pv-head { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+.lv-pv.ok .lv-pv-head { color: var(--up); } .lv-pv.bad .lv-pv-head { color: var(--live); }
+.lv-pv-line { font-size: 12px; margin: 3px 0; }
+.lv-list { margin: 8px 0 0 18px; font-size: 12px; line-height: 1.5; }
+.lv-list.err { color: var(--live); } .lv-list.warn { color: var(--amber); }
+.lv-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .65); z-index: 80; display: grid; place-items: center; padding: 16px; }
+.lv-modal { background: var(--surface); border: 2px solid var(--live); border-radius: 14px; padding: 20px; width: min(460px, 100%); box-shadow: var(--shadow-md); }
+.lv-modal-title { font-family: var(--font-display); font-weight: 800; color: var(--live); letter-spacing: .04em; margin-bottom: 12px; }
+.lv-modal-big { font-family: var(--font-mono); font-size: 16px; font-weight: 700; margin-bottom: 10px; word-break: break-all; }
+.lv-modal-big.buy { color: var(--up); } .lv-modal-big.sell { color: var(--live); }
+.lv-modal-table { width: 100%; font-size: 12.5px; border-collapse: collapse; }
+.lv-modal-table td { padding: 5px 0; border-bottom: 1px solid var(--line); } .lv-modal-table td:first-child { color: var(--tx-3); width: 42%; }
+.lv-modal-warn { margin: 14px 0; font-size: 12px; color: var(--live); font-weight: 600; line-height: 1.45; }
+.lv-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 960px) { .lv-grid { grid-template-columns: 1fr; } }
+.lv-exit-f{display:flex}
+.lv-exit-note{font-size:11px;line-height:1.5;color:var(--tx-3);margin:2px 0 8px}
+.lv-exit-warn{font-size:12px;font-weight:600;color:var(--live);margin-bottom:8px}
+.lv-exit-set{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding:10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface-2)}
+.lv-exit-set label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--tx-3)}
+.lv-exit-set input{width:90px;height:30px;padding:0 8px;border-radius:6px;border:1px solid var(--line-2)}
+.linkbtn{background:none;border:0;color:var(--cyan,#22d3ee);cursor:pointer;text-decoration:underline;font-size:11px;padding:0}

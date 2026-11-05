@@ -78,6 +78,7 @@
       </div>
     </div>
     <div class="tb-right">
+      <a class="tb-live" id="tb-live" href="#" style="display:none" title="Live trading is ON: orders go to your broker" onclick="switchTab('live'); return false;">LIVE</a>
       <label class="tb-auto" title="Auto paper-trading (virtual money, runs on the server)">
         <span>AUTO</span><span class="at-switch-wrap sm"><input type="checkbox" class="at-toggle" /><span class="at-slider"></span></span>
       </label>
@@ -121,6 +122,9 @@
         </button>
         <button class="nav-btn" onclick="switchTab('tradelog')" data-tab="tradelog">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span><span class="nav-label">Trade Log</span>
+        </button>
+        <button class="nav-btn nav-btn-live" onclick="switchTab('live')" data-tab="live">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span><span class="nav-label">Live</span>
         </button>
         <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span class="nav-label">Paper</span>
@@ -950,6 +954,132 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: LIVE TRADING (REAL MONEY) ══════ -->
+      <section class="tab-pane" id="tab-live">
+        <div class="lv-banner off" id="lv-banner">
+          <div class="lv-banner-text">
+            <div class="lv-title" id="lv-title">LIVE TRADING IS OFF</div>
+            <div class="lv-sub" id="lv-sub">Real orders are blocked. Nothing here reaches your broker until you switch live mode on.</div>
+          </div>
+          <div class="lv-banner-actions">
+            <button class="btn lv-btn-on" id="lv-toggle">Switch live ON</button>
+            <button class="btn btn-danger" id="lv-kill" title="Switch live off and cancel every open order. Open positions are NOT closed.">KILL SWITCH</button>
+          </div>
+        </div>
+
+        <div class="lv-grid">
+          <div class="card">
+            <div class="card-title">Account &amp; limits</div>
+            <div class="lv-funds" id="lv-funds">Loading…</div>
+            <div class="lv-limits-note" id="lv-limits-note"></div>
+            <div class="at-set-grid">
+              <label>Max value per order (₹)<input id="lv-lim-value" type="number" min="1" step="100"></label>
+              <label>Max lots per order<input id="lv-lim-lots" type="number" min="1" step="1"></label>
+              <label>Daily loss cap (₹)<input id="lv-lim-loss" type="number" min="1" step="100"></label>
+            </div>
+            <div class="at-set-actions" style="margin-top:10px">
+              <button class="btn btn-primary btn-sm" id="lv-lim-save">Save limits</button>
+              <span class="small" id="lv-lim-msg"></span>
+            </div>
+            <div class="lv-rules">
+              <b>Rules enforced by the server:</b> option contracts only · a buy must fit your limits · a sell can only close a position you hold (no writing options) ·
+              orders only while the exchange is open · a limit price more than 20% from the last price is refused · buys stop for the day once the loss cap is hit ·
+              live mode switches itself off whenever the server restarts.
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">Place a live order</div>
+            <div class="lv-form">
+              <label class="lv-wide">Option contract
+                <input id="lv-sym" list="sym-list" placeholder="e.g. NIFTY 24000 CE, then pick a contract" autocomplete="off" oninput="debounceSearch(event, 'sym-list')">
+              </label>
+              <div class="lv-side">
+                <button type="button" class="btn btn-long dir-btn active" id="lv-buy">▲ BUY</button>
+                <button type="button" class="btn btn-short dir-btn" id="lv-sell">▼ SELL (close)</button>
+              </div>
+              <label>Lots<input id="lv-lots" type="number" min="1" step="1" value="1"></label>
+              <label>Order type
+                <select id="lv-otype">
+                  <option value="LIMIT">Limit</option>
+                  <option value="MARKET">Market</option>
+                  <option value="STOPLOSS_LIMIT">Stop-loss limit</option>
+                  <option value="STOPLOSS_MARKET">Stop-loss market</option>
+                </select>
+              </label>
+              <label>Product
+                <select id="lv-product">
+                  <option value="INTRADAY">Intraday (MIS)</option>
+                  <option value="CARRYFORWARD">Carry-forward (NRML)</option>
+                </select>
+              </label>
+              <label id="lv-price-wrap">Price (₹)<input id="lv-price" type="number" min="0" step="0.05" placeholder="limit price"></label>
+              <label id="lv-trigger-wrap" style="display:none">Trigger (₹)<input id="lv-trigger" type="number" min="0" step="0.05" placeholder="trigger price"></label>
+              <label class="lv-exit-f" title="Sell automatically if the price falls this % below your buy price">Stop-loss %<input id="lv-sl" type="number" min="0" max="90" step="1" placeholder="off"></label>
+              <label class="lv-exit-f" title="Sell automatically when the price rises this % above your buy price">Target %<input id="lv-tp" type="number" min="0" max="500" step="1" placeholder="off"></label>
+              <label class="lv-exit-f" title="Sell automatically if the price falls this % from its highest point after you buy">Trailing stop %<input id="lv-trail" type="number" min="0" max="90" step="1" placeholder="off"></label>
+            </div>
+            <div class="lv-exit-note" id="lv-exit-note">Stop-loss, target and trailing stop are watched by this server after your buy fills, and it sends the sell order itself. They work only while the server is running, live mode is ON and the exchange is open. <button type="button" class="linkbtn" id="lv-exit-defaults">Save these as my defaults</button></div>
+            <div class="lv-qty" id="lv-qty-note"></div>
+            <div class="at-set-actions">
+              <button class="btn btn-primary btn-sm" id="lv-check">Check order</button>
+              <span class="small muted">Nothing is sent until you confirm the checked order.</span>
+            </div>
+            <div class="lv-preview" id="lv-preview"></div>
+          </div>
+        </div>
+
+        <div class="card mb12">
+          <div class="pt-section-header"><span class="card-title" style="margin:0">Open positions (from your broker)</span>
+            <button class="btn btn-ghost btn-sm" id="lv-refresh">↺ Refresh</button></div>
+          <div class="tbl-wrap"><table class="dtbl">
+            <thead><tr><th>Contract</th><th>Product</th><th>Net qty</th><th>Avg buy</th><th>LTP</th><th>P&amp;L</th><th></th></tr></thead>
+            <tbody id="lv-pos"><tr><td colspan="7" class="empty-cell">No open positions.</td></tr></tbody></table></div>
+        </div>
+
+        <div class="card mb12">
+          <div class="card-title">Stop-loss, target &amp; trailing stop <span class="muted small">(watched by this server; it sells at market when one is hit)</span></div>
+          <div class="lv-exit-warn" id="lv-exit-warn" style="display:none"></div>
+          <div class="lv-exit-set" id="lv-exit-set" style="display:none">
+            <b id="lv-exit-for"></b>
+            <label>Stop-loss %<input id="lv-es-sl" type="number" min="0" max="90" step="1" placeholder="off"></label>
+            <label>Target %<input id="lv-es-tp" type="number" min="0" max="500" step="1" placeholder="off"></label>
+            <label>Trailing %<input id="lv-es-trail" type="number" min="0" max="90" step="1" placeholder="off"></label>
+            <button class="btn btn-primary btn-sm" id="lv-es-save">Save rules</button>
+            <button class="btn btn-ghost btn-sm" id="lv-es-close">Close</button>
+            <span class="small" id="lv-es-msg"></span>
+          </div>
+          <div class="tbl-wrap"><table class="dtbl">
+            <thead><tr><th>Contract</th><th>Rules</th><th>Entry</th><th>Highest</th><th>Stop now</th><th>Target</th><th>Status</th><th></th></tr></thead>
+            <tbody id="lv-exits"><tr><td colspan="8" class="empty-cell">No rules yet. Add them to a buy order, or press "Stop/target" on a position.</td></tr></tbody></table></div>
+        </div>
+
+        <div class="card mb12">
+          <div class="card-title">Today's orders (from your broker)</div>
+          <div class="tbl-wrap"><table class="dtbl">
+            <thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th><th>Note</th><th></th></tr></thead>
+            <tbody id="lv-orders"><tr><td colspan="9" class="empty-cell">No orders today.</td></tr></tbody></table></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Orders sent from this app <span class="muted small">(a permanent record, including any whose outcome was unknown)</span></div>
+          <div class="tbl-wrap"><table class="dtbl">
+            <thead><tr><th>Time</th><th>Contract</th><th>Side</th><th>Qty</th><th>Type</th><th>Result</th><th>Broker order id</th><th>Message</th></tr></thead>
+            <tbody id="lv-ledger"><tr><td colspan="8" class="empty-cell">Nothing sent yet.</td></tr></tbody></table></div>
+        </div>
+
+        <div class="lv-modal-backdrop" id="lv-modal" style="display:none">
+          <div class="lv-modal">
+            <div class="lv-modal-title">Confirm a REAL order</div>
+            <div id="lv-modal-body"></div>
+            <div class="lv-modal-actions">
+              <button class="btn btn-ghost" id="lv-modal-cancel">Cancel</button>
+              <button class="btn lv-btn-send" id="lv-modal-send">Send order to broker</button>
+            </div>
           </div>
         </div>
       </section>

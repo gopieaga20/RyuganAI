@@ -22,6 +22,7 @@ import { openStockBrowser, closeStockBrowser } from './stock-browser.js';
 import { loadOptionChain, runFoAnalysis } from './option-chain.js';
 import { initDash, onThemeChange } from './dash.js';
 import { initAutoTrade, refreshAutoTrade } from './autotrade.js';
+import { initLive, refreshAll as refreshLive } from './live.js';
 
 /* ═══════════════════════════════════════════
    MODULE: LOADING
@@ -59,7 +60,7 @@ tick();
 /* ═══════════════════════════════════════════
    MODULE: TAB NAVIGATION
 ═══════════════════════════════════════════ */
-const ALL_TABS = ['dash', 'nifty', 'signals', 'morning', 'fo', 'sectors', 'backtest', 'analyst', 'tradelog', 'paper'];
+const ALL_TABS = ['dash', 'live', 'nifty', 'signals', 'morning', 'fo', 'sectors', 'backtest', 'analyst', 'tradelog', 'paper'];
 export function switchTab(t) {
   if (!ALL_TABS.includes(t)) return;
   // Update sidebar nav active state
@@ -76,6 +77,7 @@ export function switchTab(t) {
   // Refresh paper trading data when switching to that tab
   if (t === 'paper') { refreshPaperTrading(); refreshAutoTrade(); }
   if (t === 'nifty') fetchGlobalCues();
+  if (t === 'live') refreshLive();
 }
 
 const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
@@ -98,6 +100,7 @@ window.addEventListener('load', async () => {
   WL.init();
   initDash();
   initAutoTrade();
+  initLive();
 
   // Initial data fetches
   try { await refreshPaperTrading(); await _fetchDayStats(); } catch { }

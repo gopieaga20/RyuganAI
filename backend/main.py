@@ -48,6 +48,10 @@ except ImportError:
 from nse_client import get_fo_underlyings
 from db import ResilientPool
 import autotrader
+import live_broker
+import live_rules
+import live_exits
+import uuid
 
 load_dotenv()
 
@@ -75,9 +79,10 @@ async def lifespan(app: FastAPI):
         print("       Starting without DB: paper trading answers 503 until PostgreSQL is reachable, then reconnects by itself.")
     watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
     auto_task = asyncio.create_task(_autotrade_loop(pool))
+    exit_task = asyncio.create_task(_live_exit_loop(pool))
     yield
     master_task.cancel()
-    for task in (watcher_task, auto_task):
+    for task in (watcher_task, auto_task, exit_task):
         task.cancel()
         try:
             await task
@@ -467,6 +472,44 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 candle_ts   BIGINT
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_orders (
+                id              SERIAL PRIMARY KEY,
+                client_id       TEXT UNIQUE NOT NULL,
+                ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                symbol          TEXT NOT NULL,
+                side            TEXT NOT NULL,
+                qty             INTEGER NOT NULL,
+                order_type      TEXT NOT NULL,
+                product         TEXT NOT NULL,
+                price           NUMERIC(12, 2),
+                trigger_price   NUMERIC(12, 2),
+                state           TEXT NOT NULL,
+                broker_order_id TEXT,
+                message         TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_exits (
+                id            SERIAL PRIMARY KEY,
+                created       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                symbol        TEXT NOT NULL,
+                product       TEXT NOT NULL,
+                qty           INTEGER NOT NULL,
+                sl_pct        NUMERIC(6, 2) NOT NULL DEFAULT 0,
+                tp_pct        NUMERIC(6, 2) NOT NULL DEFAULT 0,
+                trail_pct     NUMERIC(6, 2) NOT NULL DEFAULT 0,
+                entry         NUMERIC(12, 2),
+                peak          NUMERIC(12, 2),
+                stop          NUMERIC(12, 2),
+                target        NUMERIC(12, 2),
+                state         TEXT NOT NULL DEFAULT 'WAITING',
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                reason        TEXT NOT NULL DEFAULT '',
+                message       TEXT NOT NULL DEFAULT ''
+            )
+        """)
         # Safe migration: add new columns if they don't exist on old tables
         for stmt in [
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
@@ -805,6 +848,452 @@ async def autotrade_run(request: Request, dry: bool = True, as_if_open: bool = F
     now = autotrader.now_ist().replace(hour=10, minute=0) if (dry and as_if_open) else None
     decisions = await _run_autotrade_cycle(pool, dry=dry, now=now)
     return {"dry": dry, "decisions": decisions}
+
+
+# ─────────────────────────────────────────────
+# LIVE (REAL-MONEY) MANUAL TRADING — see live_rules.py and live_broker.py
+# Live mode is held in memory only, so it is OFF again after every server restart.
+# ─────────────────────────────────────────────
+_live_state = {"enabled": False, "enabled_at": None}
+_live_previews: dict = {}                 # preview_id -> {"order": ..., "expires": ...}; an order is only sent from a preview
+_PREVIEW_TTL = 120
+_LIVE_PHRASE = "ENABLE LIVE"
+
+
+class LiveOrderIn(BaseModel):
+    symbol: str = Field(..., min_length=3, max_length=40)
+    side: str = Field(..., pattern="^(BUY|SELL)$")
+    qty: int = Field(..., ge=1, le=1000000)
+    order_type: str = Field(..., pattern="^(LIMIT|MARKET|STOPLOSS_LIMIT|STOPLOSS_MARKET)$")
+    product: str = Field(..., pattern="^(INTRADAY|CARRYFORWARD)$")
+    price: Optional[float] = Field(default=None, ge=0)
+    trigger_price: Optional[float] = Field(default=None, ge=0)
+    sl_pct: Optional[float] = Field(default=None, ge=0, le=100)       # exit rules for a BUY: managed by the server after it fills
+    tp_pct: Optional[float] = Field(default=None, ge=0, le=1000)
+    trail_pct: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class LiveConfirm(BaseModel):
+    preview_id: str = Field(..., min_length=8, max_length=64)
+
+
+class LiveEnable(BaseModel):
+    phrase: str = ""
+
+
+class LiveLimits(BaseModel):
+    max_order_value: float = Field(..., gt=0, le=10_000_000)
+    max_lots: int = Field(..., ge=1, le=1000)
+    max_daily_loss: float = Field(..., gt=0, le=10_000_000)
+
+
+async def _live_limits(pool) -> dict:
+    raw = await autotrader._row(pool, "live_limits")
+    try:
+        return json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+async def _live_context(pool, o: dict) -> dict:
+    sym = o["symbol"].upper()
+    info = _angel_broker._master_lookup.get(sym) if _angel_broker else None
+    found = bool(info and info.get("exch") == "NFO" and _OPTION_SYMBOL_RE.match(sym))
+    und = autotrader.underlying_from_contract(sym)
+    lot = (get_lot_sizes() or {}).get(und) if und else None
+    problems = []
+    try:
+        ltp = await _fetch_ltp(sym) if found else None
+    except Exception as e:
+        ltp = None
+        problems.append(f"Could not read the live price: {e}")
+    try:
+        pos = await asyncio.to_thread(live_broker.positions)
+    except Exception as e:
+        pos = []
+        problems.append(f"Could not read your positions from the broker ({e}), so the order cannot be checked safely.")
+    net_long = sum(p["net_qty"] for p in pos if p["symbol"] == sym and p["product"] == o["product"] and p["net_qty"] > 0)
+    day_loss = max(0.0, -sum((p["pnl"] or 0) for p in pos))
+    try:
+        limits = await _live_limits(pool)
+    except Exception as e:
+        limits = {}
+        problems.append(f"Could not read your saved limits ({e}).")
+    return {"limits": limits, "problems": problems, "contract_found": found, "lot_size": lot, "ltp": ltp, "net_long_qty": net_long,
+            "day_loss": day_loss, "now": autotrader.now_ist(), "info": info}
+
+
+def _live_preview_payload(o: dict, ctx: dict, check: dict) -> dict:
+    return {"order": o, "ltp": ctx["ltp"], "lot_size": ctx["lot_size"], "live_enabled": _live_state["enabled"], **check}
+
+
+@app.exception_handler(Exception)
+async def _live_error_detail(request: Request, exc: Exception):
+    """An unexpected error on a live endpoint is shown to the user with its reason, instead of a bare 'HTTP 500'."""
+    from fastapi.responses import JSONResponse
+    print(f"[ERROR] {request.method} {request.url.path}: {exc!r}")
+    if request.url.path.startswith("/api/live/"):
+        return JSONResponse(status_code=500, content={"detail": f"Server error: {exc}"})
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
+
+@app.get("/api/live/status")
+async def live_status(request: Request):
+    pool = _get_pool(request)
+    limits = await _live_limits(pool)
+    funds = None
+    try:
+        funds = await asyncio.to_thread(live_broker.funds)
+    except Exception as e:
+        funds = {"error": str(e)}
+    async with pool.acquire() as conn:
+        orders_today = await conn.fetchval("SELECT COUNT(*) FROM live_orders WHERE state = 'PLACED' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1",
+                                           autotrader.now_ist().date())
+    return {"enabled": _live_state["enabled"], "enabled_at": _live_state["enabled_at"], "limits": limits, "limits_ready": live_rules.limits_ready(limits),
+            "market_open": live_rules.market_open(autotrader.now_ist()), "funds": funds, "orders_today": orders_today,
+            "phrase": _LIVE_PHRASE}
+
+
+@app.post("/api/live/enable")
+async def live_enable(req: LiveEnable):
+    if req.phrase.strip() != _LIVE_PHRASE:
+        raise HTTPException(status_code=400, detail=f"Type exactly {_LIVE_PHRASE} to switch live trading on.")
+    _live_state.update(enabled=True, enabled_at=time.time())
+    return {"enabled": True}
+
+
+@app.post("/api/live/disable")
+async def live_disable():
+    _live_state.update(enabled=False, enabled_at=None)
+    return {"enabled": False}
+
+
+@app.post("/api/live/limits")
+async def live_set_limits(req: LiveLimits, request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO app_settings (key, value) VALUES ('live_limits', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                           json.dumps(req.model_dump()))
+    return {"limits": req.model_dump(), "limits_ready": True}
+
+
+@app.post("/api/live/preview")
+async def live_preview(req: LiveOrderIn, request: Request):
+    """Check an order against every rule and return what it would cost. Sends nothing. A passing preview can be confirmed
+    within two minutes, and only the previewed order can be sent."""
+    pool = _get_pool(request)
+    o = {**req.model_dump(), "symbol": req.symbol.upper()}
+    ctx = await _live_context(pool, o)
+    check = live_rules.validate_order(o, ctx)
+    if ctx.get("problems"):
+        check["errors"] = list(ctx["problems"]) + check["errors"]; check["ok"] = False
+    out = _live_preview_payload(o, ctx, check)
+    now = time.time()
+    for k in [k for k, v in _live_previews.items() if v["expires"] < now]:
+        _live_previews.pop(k, None)
+    if check["ok"]:
+        pid = uuid.uuid4().hex
+        _live_previews[pid] = {"order": o, "expires": now + _PREVIEW_TTL}
+        out["preview_id"] = pid
+        out["expires_in"] = _PREVIEW_TTL
+    return out
+
+
+@app.post("/api/live/order")
+async def live_place(req: LiveConfirm, request: Request):
+    """Send the previewed order to the broker, once."""
+    if not _live_state["enabled"]:
+        raise HTTPException(status_code=403, detail="Live trading is OFF. Switch it on (type the phrase) first.")
+    pool = _get_pool(request)
+    item = _live_previews.pop(req.preview_id, None)
+    if not item or item["expires"] < time.time():
+        raise HTTPException(status_code=409, detail="This preview has expired or was already used. Preview the order again.")
+    o = item["order"]
+    ctx = await _live_context(pool, o)                     # re-check with fresh prices and positions
+    check = live_rules.validate_order(o, ctx)
+    if ctx.get("problems"):
+        check["errors"] = list(ctx["problems"]) + check["errors"]; check["ok"] = False
+    if not check["ok"]:
+        raise HTTPException(status_code=400, detail=" ".join(check["errors"]))
+    params = live_broker.build_params(o, ctx["info"]["token"], ctx["info"]["exch"], tag="RYUGAN" + req.preview_id[:6])
+    async with pool.acquire() as conn:                     # written BEFORE sending: if anything goes wrong there is still a record
+        await conn.execute(
+            """INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, price, trigger_price, state)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'SENDING')""",
+            req.preview_id, o["symbol"], o["side"], o["qty"], o["order_type"], o["product"], o.get("price") or None, o.get("trigger_price") or None)
+    result = await asyncio.to_thread(live_broker.place, params)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE live_orders SET state = $1, broker_order_id = $2, message = $3 WHERE client_id = $4",
+                           result["state"], result.get("order_id"), (result.get("message") or "")[:500], req.preview_id)
+    print(f"[LIVE] {o['side']} {o['qty']} {o['symbol']} {o['order_type']} -> {result['state']} {result.get('order_id') or ''} {result.get('message') or ''}")
+    rule = {k: o.get(k) or 0 for k in ("sl_pct", "tp_pct", "trail_pct")}
+    if result["state"] == "PLACED" and o["side"] == "BUY" and live_exits.any_rule(rule):
+        try:
+            await _live_exit_create(pool, o["symbol"], o["product"], o["qty"], rule)
+        except Exception as e:
+            print(f"[WARN] could not save the exit rules for {o['symbol']}: {e}")
+            result["message"] = (result.get("message") or "") + " WARNING: the stop-loss/target rules could not be saved: set them again on the position."
+    return {"state": result["state"], "order_id": result.get("order_id"), "message": result.get("message", ""), "est": check["est"]}
+
+
+@app.get("/api/live/orders")
+async def live_orders(request: Request):
+    pool = _get_pool(request)
+    try:
+        book = await asyncio.to_thread(live_broker.order_book)
+    except Exception as e:
+        book = []
+        print(f"[WARN] live order book failed: {e}")
+    async with pool.acquire() as conn:
+        ledger = await conn.fetch("SELECT * FROM live_orders ORDER BY id DESC LIMIT 50")
+    return {"orders": book, "ledger": [dict(r) for r in ledger]}
+
+
+@app.get("/api/live/positions")
+async def live_positions():
+    pos = await asyncio.to_thread(live_broker.positions)
+    return {"positions": [p for p in pos if p["net_qty"] != 0 or (p["pnl"] or 0) != 0]}
+
+
+# ── stop-loss / target / trailing stop, managed by the server for real positions ──
+class LiveExitRule(BaseModel):
+    symbol: str = Field(..., min_length=3, max_length=40)
+    product: str = Field(..., pattern="^(INTRADAY|CARRYFORWARD)$")
+    sl_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    tp_pct: Optional[float] = Field(default=None, ge=0, le=1000)
+    trail_pct: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class LiveExitCancel(BaseModel):
+    id: int = Field(..., ge=1)
+
+
+class LiveExitDefaults(BaseModel):
+    sl_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    tp_pct: Optional[float] = Field(default=None, ge=0, le=1000)
+    trail_pct: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+_EXIT_WAIT_SECS = 30 * 60        # a buy that has not shown up as a position after this long is given up on
+_EXIT_MAX_ATTEMPTS = 3           # a sell the exchange refused is tried this many times; an unknown outcome is never retried
+
+
+async def _live_exit_create(pool, symbol: str, product: str, qty: int, rule: dict) -> int:
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE live_exits SET state = 'CANCELLED', reason = 'replaced', updated = NOW() WHERE symbol = $1 AND product = $2 AND state IN ('WAITING', 'ARMED')",
+                           symbol, product)
+        return await conn.fetchval("INSERT INTO live_exits (symbol, product, qty, sl_pct, tp_pct, trail_pct) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                                   symbol, product, qty, rule["sl_pct"], rule["tp_pct"], rule["trail_pct"])
+
+
+async def _live_send_exit(pool, r, qty: int, action: str):
+    """Sell `qty` at market to close a position because its stop / trailing stop / target was hit. Recorded before it is sent;
+    an outcome that is unknown is never sent again."""
+    info = _angel_broker._master_lookup.get(r["symbol"]) if _angel_broker else None
+    if not info:
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE live_exits SET state = 'EXIT_FAILED', message = $2, updated = NOW() WHERE id = $1", r["id"], "contract not in the scrip master")
+        return
+    o = {"symbol": r["symbol"], "side": "SELL", "qty": qty, "order_type": "MARKET", "product": r["product"], "price": 0, "trigger_price": 0}
+    client_id = f"EXIT{r['id']}-{uuid.uuid4().hex[:8]}"
+    params = live_broker.build_params(o, info["token"], info["exch"], tag=f"RYEXIT{r['id']}"[:20])
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, state, message) VALUES ($1, $2, 'SELL', $3, 'MARKET', $4, 'SENDING', $5)",
+                           client_id, r["symbol"], qty, r["product"], f"auto exit: {action}")
+    result = await asyncio.to_thread(live_broker.place, params)
+    st = result["state"]
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE live_orders SET state = $1, broker_order_id = $2, message = $3 WHERE client_id = $4",
+                           st, result.get("order_id"), (f"auto exit: {action}. " + (result.get("message") or ""))[:500], client_id)
+        if st == "PLACED":
+            await conn.execute("UPDATE live_exits SET state = 'EXIT_SENT', message = $2, updated = NOW() WHERE id = $1", r["id"], f"order {result.get('order_id')}")
+        elif st == "UNKNOWN":
+            await conn.execute("UPDATE live_exits SET state = 'UNKNOWN', message = $2, updated = NOW() WHERE id = $1", r["id"],
+                               "The exit order's outcome is unknown. It was NOT sent again: check your broker app.")
+        else:                                                    # refused or never sent: safe to try again, a few times
+            attempts = (r["attempts"] or 0) + 1
+            await conn.execute("UPDATE live_exits SET state = $2, attempts = $3, message = $4, updated = NOW() WHERE id = $1", r["id"],
+                               "ARMED" if attempts < _EXIT_MAX_ATTEMPTS else "EXIT_FAILED", attempts, (result.get("message") or st)[:300])
+    print(f"[LIVE-EXIT] {action} SELL {qty} {r['symbol']} -> {st} {result.get('order_id') or ''} {result.get('message') or ''}")
+
+
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+async def _live_exit_tick(pool):
+    """One look at every position that has exit rules. Does nothing unless live mode is ON and the exchange is open."""
+    now = autotrader.now_ist()
+    if not _live_state["enabled"] or not live_rules.market_open(now):
+        return
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM live_exits WHERE state IN ('WAITING', 'ARMED') ORDER BY id")
+    if not rows:
+        return
+    pos = await asyncio.to_thread(live_broker.positions)
+    for r in rows:
+        mine = [p for p in pos if p["symbol"] == r["symbol"] and p["product"] == r["product"] and p["net_qty"] > 0]
+        held = sum(p["net_qty"] for p in mine)
+        if r["state"] == "WAITING":
+            if held <= 0:
+                if (_utc_now() - r["created"]).total_seconds() > _EXIT_WAIT_SECS:
+                    async with pool.acquire() as conn:
+                        await conn.execute("UPDATE live_exits SET state = 'EXPIRED', message = 'the buy never became a position', updated = NOW() WHERE id = $1", r["id"])
+                continue
+            entry = float(mine[0].get("buy_avg") or mine[0].get("ltp") or 0)
+            if entry <= 0:
+                continue
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE live_exits SET state = 'ARMED', entry = $2, peak = $2, qty = $3, updated = NOW() WHERE id = $1", r["id"], entry, min(int(r["qty"]), held))
+            continue
+        if held <= 0:
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE live_exits SET state = 'DONE', message = 'the position is closed', updated = NOW() WHERE id = $1", r["id"])
+            continue
+        try:
+            ltp = await _fetch_ltp(r["symbol"])
+        except Exception:
+            ltp = None
+        ltp = ltp or mine[0].get("ltp")
+        if not ltp:
+            continue
+        rule = {"sl_pct": float(r["sl_pct"]), "tp_pct": float(r["tp_pct"]), "trail_pct": float(r["trail_pct"])}
+        entry = float(r["entry"])
+        ev = live_exits.evaluate(rule, entry, float(ltp), float(r["peak"] or entry))
+        if ev["action"]:
+            async with pool.acquire() as conn:
+                claimed = await conn.fetchval("UPDATE live_exits SET state = 'TRIGGERED', reason = $2, updated = NOW() WHERE id = $1 AND state = 'ARMED' RETURNING id", r["id"], ev["action"])
+            if claimed:
+                await _live_send_exit(pool, r, min(int(r["qty"]), held), ev["action"])
+        else:
+            old = (float(r["peak"] or 0), float(r["stop"]) if r["stop"] is not None else None, float(r["target"]) if r["target"] is not None else None)
+            if (ev["peak"], ev["stop"], ev["target"]) != old:
+                async with pool.acquire() as conn:
+                    await conn.execute("UPDATE live_exits SET peak = $2, stop = $3, target = $4, updated = NOW() WHERE id = $1", r["id"], ev["peak"], ev["stop"], ev["target"])
+
+
+async def _live_exit_loop(pool):
+    last = None
+    while True:
+        await asyncio.sleep(4)
+        try:
+            await _live_exit_tick(pool)
+            last = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if str(e) != last:
+                print(f"[WARN] live exit watcher: {e}")
+                last = str(e)
+
+
+@app.get("/api/live/exits")
+async def live_exits_list(request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM live_exits WHERE state IN ('WAITING', 'ARMED') OR updated > NOW() - INTERVAL '1 day' ORDER BY id DESC LIMIT 30")
+        raw = await conn.fetchrow("SELECT value FROM app_settings WHERE key = 'live_exit_defaults'")
+    try:
+        defaults = json.loads(raw["value"]) if raw else {}
+    except (ValueError, TypeError):
+        defaults = {}
+    return {"exits": [dict(r) for r in rows], "watching": _live_state["enabled"], "defaults": defaults}
+
+
+@app.post("/api/live/exits/set")
+async def live_exits_set(req: LiveExitRule, request: Request):
+    """Put (or replace) stop-loss / target / trailing rules on a position you already hold."""
+    pool = _get_pool(request)
+    try:
+        rule = live_exits.clean(req.sl_pct, req.tp_pct, req.trail_pct)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    sym = req.symbol.upper()
+    pos = await asyncio.to_thread(live_broker.positions)
+    held = sum(p["net_qty"] for p in pos if p["symbol"] == sym and p["product"] == req.product and p["net_qty"] > 0)
+    if held <= 0:
+        raise HTTPException(status_code=400, detail="You do not hold this contract long with this product, so there is nothing to protect.")
+    if not live_exits.any_rule(rule):
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE live_exits SET state = 'CANCELLED', reason = 'removed', updated = NOW() WHERE symbol = $1 AND product = $2 AND state IN ('WAITING', 'ARMED')", sym, req.product)
+        return {"removed": True}
+    return {"id": await _live_exit_create(pool, sym, req.product, held, rule)}
+
+
+@app.post("/api/live/exits/cancel")
+async def live_exits_cancel(req: LiveExitCancel, request: Request):
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE live_exits SET state = 'CANCELLED', reason = 'cancelled by you', updated = NOW() WHERE id = $1 AND state IN ('WAITING', 'ARMED')", req.id)
+    return {"cancelled": req.id}
+
+
+@app.post("/api/live/exit-defaults")
+async def live_exit_defaults(req: LiveExitDefaults, request: Request):
+    pool = _get_pool(request)
+    try:
+        rule = live_exits.clean(req.sl_pct, req.tp_pct, req.trail_pct)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO app_settings (key, value) VALUES ('live_exit_defaults', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", json.dumps(rule))
+    return {"defaults": rule}
+
+
+class LiveCancel(BaseModel):
+    order_id: str = Field(..., min_length=3, max_length=40)
+    variety: str = Field(default="NORMAL", pattern="^(NORMAL|STOPLOSS|AMO|ROBO)$")
+
+
+@app.post("/api/live/cancel")
+async def live_cancel(req: LiveCancel):
+    """Cancelling is always allowed, even with live mode off: it can only reduce risk."""
+    res = await asyncio.to_thread(live_broker.cancel, req.order_id, req.variety)
+    if not res["ok"]:
+        raise HTTPException(status_code=400, detail=res.get("message") or "The broker did not cancel the order.")
+    return res
+
+
+class LiveExit(BaseModel):
+    symbol: str = Field(..., min_length=3, max_length=40)
+    product: str = Field(..., pattern="^(INTRADAY|CARRYFORWARD)$")
+
+
+@app.post("/api/live/exit-preview")
+async def live_exit_preview(req: LiveExit, request: Request):
+    """Preview an order that closes a long position: a SELL limit order a little below the last price so it fills."""
+    pool = _get_pool(request)
+    sym = req.symbol.upper()
+    pos = await asyncio.to_thread(live_broker.positions)
+    held = sum(p["net_qty"] for p in pos if p["symbol"] == sym and p["product"] == req.product and p["net_qty"] > 0)
+    if held <= 0:
+        raise HTTPException(status_code=400, detail="There is no long position to close for this contract and product.")
+    ltp = await _fetch_ltp(sym)
+    if not ltp:
+        raise HTTPException(status_code=503, detail="No live price for this contract right now.")
+    price = max(0.05, round(ltp * 0.98 / 0.05) * 0.05)
+    return await live_preview(LiveOrderIn(symbol=sym, side="SELL", qty=held, order_type="LIMIT", product=req.product, price=round(price, 2)), request)
+
+
+@app.post("/api/live/kill")
+async def live_kill():
+    """Emergency stop: switch live trading off and cancel every open order. Open positions are NOT closed (do that deliberately)."""
+    _live_state.update(enabled=False, enabled_at=None)
+    try:
+        async with app.state.pool.acquire() as conn:
+            await conn.execute("UPDATE live_exits SET state = 'CANCELLED', reason = 'kill switch', updated = NOW() WHERE state IN ('WAITING', 'ARMED')")
+    except Exception as e:
+        print(f"[WARN] kill switch could not cancel the exit rules: {e}")
+    cancelled, failed = [], []
+    try:
+        for o in await asyncio.to_thread(live_broker.order_book):
+            if o["open"]:
+                r = await asyncio.to_thread(live_broker.cancel, o["order_id"], o["variety"])
+                (cancelled if r["ok"] else failed).append(o["order_id"])
+    except Exception as e:
+        print(f"[WARN] kill switch could not read the order book: {e}")
+        return {"enabled": False, "cancelled": cancelled, "failed": failed, "error": str(e)}
+    return {"enabled": False, "cancelled": cancelled, "failed": failed}
 
 
 @app.get("/api/paper/stats")

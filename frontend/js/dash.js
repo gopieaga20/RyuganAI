@@ -274,6 +274,7 @@ export function initDash() {
   // chart full view (Esc exits)
   const panel = $('dash-chart'), fullBtn = $('ch-full');
   const setFull = on => {
+    if (on) window.scrollTo(0, 0);                                            // a scrolled page would leave a gap above the panel
     panel.classList.toggle('full', on); document.body.classList.toggle('chart-full-open', on);
     fullBtn.textContent = on ? '✕ Exit full view' : '⛶ Full view';
     for (const ms of [0, 80, 300]) setTimeout(() => ChartView.resize(), ms);   // refit once the new layout has settled
