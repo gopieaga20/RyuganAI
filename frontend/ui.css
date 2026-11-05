@@ -459,3 +459,10 @@ body.chart-full-open { overflow: hidden; }
 @media (max-width: 700px) {   /* keep the hover legend to one short line on the phone */
   .ch-legend .lg-e9, .ch-legend .lg-e21, .ch-legend .lg-e50, .ch-legend .lg-vw, .ch-legend .lg-rs, .ch-legend .lg-t { display: none; }
 }
+
+/* Paper-trading order form: the LONG / SHORT toggle needs more room than the generic 120px field */
+.pt-order-grid .fg:has(.dir-toggle) { flex: 0 0 auto; min-width: 210px; }
+.dir-toggle { min-width: 200px; }
+.dir-btn { white-space: nowrap; min-width: 96px; border-color: var(--line-2); }
+.dir-btn:hover { border-color: var(--accent); color: var(--tx); }
+@media (max-width: 700px) { .pt-order-grid .fg:has(.dir-toggle) { flex: 1 1 100%; } .dir-toggle { width: 100%; } }
