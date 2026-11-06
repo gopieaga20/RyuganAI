@@ -1224,6 +1224,20 @@
               <label>Default target %<input id="as-tp" type="number" min="5" max="300" step="1"></label>
               <label>Default lots<input id="as-lots" type="number" min="1" max="100" step="1"></label>
             </div>
+            <div class="at-set-sub">Telegram alerts <span class="muted small">(a message to your phone for orders, stop-loss and target hits, and strong calls)</span></div>
+            <div class="nf-box" id="nf-box">
+              <div class="nf-warn" id="nf-warn" style="display:none">Not set up on the server yet: add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to its .env file and restart.</div>
+              <label class="nf-check"><input type="checkbox" id="nf-enabled"> Send alerts</label>
+              <label class="nf-check"><input type="checkbox" id="nf-live_orders"> Live orders placed</label>
+              <label class="nf-check"><input type="checkbox" id="nf-live_exits"> Live stop-loss / target / trailing hits</label>
+              <label class="nf-check"><input type="checkbox" id="nf-paper"> Paper auto-trade orders and exits</label>
+              <label class="nf-check"><input type="checkbox" id="nf-calls"> Calls at or above <input id="nf-conf" type="number" min="1" max="100" step="1" style="width:64px"> % confidence</label>
+              <div class="at-set-actions">
+                <button type="button" class="btn btn-primary btn-sm" id="nf-save">Save alerts</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="nf-test">Send test message</button>
+                <span id="nf-msg" class="small"></span>
+              </div>
+            </div>
             <div class="at-set-sub">Per stock <span class="muted small">(stop-loss and target are % of the option premium paid; a stock left at the defaults follows them)</span></div>
             <div class="tbl-wrap">
               <table class="dtbl as-table">

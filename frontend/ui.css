@@ -604,3 +604,7 @@ body.chart-full-open { overflow: hidden; }
 .lv-exit-set label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--tx-3)}
 .lv-exit-set input{width:90px;height:30px;padding:0 8px;border-radius:6px;border:1px solid var(--line-2)}
 .linkbtn{background:none;border:0;color:var(--cyan,#22d3ee);cursor:pointer;text-decoration:underline;font-size:11px;padding:0}
+.nf-box{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.nf-check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--tx-2)}
+.nf-check input[type=checkbox]{width:auto;height:auto}
+.nf-warn{font-size:12px;font-weight:600;color:var(--amber,#f5a524)}

@@ -113,3 +113,6 @@ Backend: `/api/yahoo-chart/{symbol}` now keeps a 60-second in-memory cache and a
 The scan runs in the browser, so it only runs while the page is open. The calls use standard indicator rules; backtests did not show a proven edge, and the UI says so.
 
 Tests: `node --test frontend/tests/*.test.mjs` (strategies, structure, helpers) and `pytest backend/tests`.
+
+## Telegram alerts (notify.py)
+Optional alerts for live and paper orders, stop-loss / target / trailing hits and calls at 80%+ confidence. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the server .env (create the bot with @BotFather, press Start in its chat, read the chat id from getUpdates), restart, then switch alerts on under Paper > Auto-trade settings > Telegram alerts. Sending is in the background with a timeout and can never block or break an order; the token is never stored in the database or put in a message. Settings live in app_settings key notify_settings.

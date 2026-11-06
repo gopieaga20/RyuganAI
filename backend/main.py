@@ -51,6 +51,7 @@ import autotrader
 import live_broker
 import live_rules
 import live_exits
+import notify
 import uuid
 
 load_dotenv()
@@ -123,9 +124,39 @@ async def _run_autotrade_cycle(pool, dry=False, now=None):
         store = autotrader.PgStore(pool, _open_position)
         out = await autotrader.run_cycle(store, cfg, await _autotrade_deps(), now=now, dry=dry)
         _autotrade_state["last_run"] = time.time()
+        if not dry:
+            await _notify_scan(pool, out)
         return out
     finally:
         _autotrade_state["running"] = False
+
+
+async def _notify_scan(pool, rows: list):
+    """Alerts from one scan: orders the auto-trader placed, and strong calls (once per symbol per candle)."""
+    try:
+        min_conf = (await notify.load_settings(pool))["call_min_confidence"]
+        for row in rows:
+            if row.get("action") == "ORDER":
+                await notify.notify(pool, "paper", notify.paper_order(row), key=f"paperorder:{row.get('position_id')}")
+            if row.get("call") in ("BUY CE", "BUY PE") and (row.get("confidence") or 0) >= min_conf:
+                await notify.notify(pool, "calls", notify.strong_call(row), key=f"call:{row['symbol']}:{row.get('candle_ts')}:{row['call']}")
+    except Exception as e:
+        print(f"[WARN] scan alerts skipped: {e}")
+
+
+async def _alert_only_scan(pool, cfg):
+    """Auto-trading is OFF but call alerts are ON: scan the universe and alert, without logging or ordering anything."""
+    deps = await _autotrade_deps()
+    sem = asyncio.Semaphore(4)
+
+    async def one(s):
+        async with sem:
+            return await autotrader.scan_symbol(s, deps)
+
+    results = await asyncio.gather(*(one(s) for s in cfg["universe"]), return_exceptions=True)
+    rows = [{"symbol": r["sym"], "call": r.get("call"), "confidence": r.get("confidence", 0), "candle_ts": r.get("candle_ts"),
+             "price": r.get("price"), "news": r.get("news")} for r in results if isinstance(r, dict) and r.get("ok", True)]
+    await _notify_scan(pool, rows)
 
 
 async def _autotrade_loop(pool):
@@ -139,6 +170,10 @@ async def _autotrade_loop(pool):
             cfg = await autotrader.load_settings(pool)
             if cfg["enabled"] and autotrader.market_open(autotrader.now_ist()):
                 await _run_autotrade_cycle(pool)
+            elif autotrader.market_open(autotrader.now_ist()):
+                ncfg = await notify.load_settings(pool)
+                if ncfg["enabled"] and ncfg["calls"] and notify.configured():
+                    await _alert_only_scan(pool, cfg)
             last_error = None
         except asyncio.CancelledError:
             raise
@@ -322,7 +357,9 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                     continue
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
                 if reason:
-                    await _close_position(pool, pos["id"], ltp, reason)
+                    pnl = await _close_position(pool, pos["id"], ltp, reason)
+                    if pnl is not None:
+                        await notify.notify(pool, "paper", notify.paper_close(pos["symbol"], reason, ltp, pnl), key=f"paperclose:{pos['id']}")
             await _fill_pending_orders(pool)
             if _angel_broker:
                 _angel_broker.refresh_master_if_stale()
@@ -813,6 +850,32 @@ async def autotrade_status(request: Request):
     }
 
 
+class NotifySettings(BaseModel):
+    enabled: bool = False
+    live_orders: bool = True
+    live_exits: bool = True
+    paper: bool = True
+    calls: bool = True
+    call_min_confidence: float = Field(default=80, ge=1, le=100)
+
+
+@app.get("/api/notify/settings")
+async def notify_get(request: Request):
+    pool = _get_pool(request)
+    return {**await notify.load_settings(pool, fresh=True), "configured": notify.configured()}
+
+
+@app.post("/api/notify/settings")
+async def notify_set(req: NotifySettings, request: Request):
+    pool = _get_pool(request)
+    return {**await notify.save_settings(pool, req.model_dump()), "configured": notify.configured()}
+
+
+@app.post("/api/notify/test")
+async def notify_test():
+    return await notify.send_test()
+
+
 @app.post("/api/autotrade/enable")
 async def autotrade_enable(req: AutoTradeToggle, request: Request):
     cfg = await autotrader.save_settings(_get_pool(request), {"enabled": req.enabled})
@@ -1026,6 +1089,7 @@ async def live_place(req: LiveConfirm, request: Request):
         await conn.execute("UPDATE live_orders SET state = $1, broker_order_id = $2, message = $3 WHERE client_id = $4",
                            result["state"], result.get("order_id"), (result.get("message") or "")[:500], req.preview_id)
     print(f"[LIVE] {o['side']} {o['qty']} {o['symbol']} {o['order_type']} -> {result['state']} {result.get('order_id') or ''} {result.get('message') or ''}")
+    await notify.notify(pool, "live_orders", notify.live_order(o, result), key=f"order:{req.preview_id}")
     rule = {k: o.get(k) or 0 for k in ("sl_pct", "tp_pct", "trail_pct")}
     if result["state"] == "PLACED" and o["side"] == "BUY" and live_exits.any_rule(rule):
         try:
@@ -1086,7 +1150,7 @@ async def _live_exit_create(pool, symbol: str, product: str, qty: int, rule: dic
                                    symbol, product, qty, rule["sl_pct"], rule["tp_pct"], rule["trail_pct"])
 
 
-async def _live_send_exit(pool, r, qty: int, action: str):
+async def _live_send_exit(pool, r, qty: int, action: str, ltp: Optional[float] = None):
     """Sell `qty` at market to close a position because its stop / trailing stop / target was hit. Recorded before it is sent;
     an outcome that is unknown is never sent again."""
     info = _angel_broker._master_lookup.get(r["symbol"]) if _angel_broker else None
@@ -1115,6 +1179,7 @@ async def _live_send_exit(pool, r, qty: int, action: str):
             await conn.execute("UPDATE live_exits SET state = $2, attempts = $3, message = $4, updated = NOW() WHERE id = $1", r["id"],
                                "ARMED" if attempts < _EXIT_MAX_ATTEMPTS else "EXIT_FAILED", attempts, (result.get("message") or st)[:300])
     print(f"[LIVE-EXIT] {action} SELL {qty} {r['symbol']} -> {st} {result.get('order_id') or ''} {result.get('message') or ''}")
+    await notify.notify(pool, "live_exits", notify.live_exit(r, action, qty, ltp, result), key=f"exit:{r['id']}:{(r['attempts'] or 0)}")
 
 
 def _utc_now():
@@ -1164,7 +1229,7 @@ async def _live_exit_tick(pool):
             async with pool.acquire() as conn:
                 claimed = await conn.fetchval("UPDATE live_exits SET state = 'TRIGGERED', reason = $2, updated = NOW() WHERE id = $1 AND state = 'ARMED' RETURNING id", r["id"], ev["action"])
             if claimed:
-                await _live_send_exit(pool, r, min(int(r["qty"]), held), ev["action"])
+                await _live_send_exit(pool, r, min(int(r["qty"]), held), ev["action"], float(ltp))
         else:
             old = (float(r["peak"] or 0), float(r["stop"]) if r["stop"] is not None else None, float(r["target"]) if r["target"] is not None else None)
             if (ev["peak"], ev["stop"], ev["target"]) != old:

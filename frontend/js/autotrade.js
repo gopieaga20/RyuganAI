@@ -193,7 +193,35 @@ function addSymbol() {
   $('as-msg').style.color = 'var(--text3)'; $('as-msg').textContent = `${sym} added. Press Save to apply.`;
 }
 
+/* ───────────── Telegram alerts ───────────── */
+const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'calls'];
+
+async function loadAlerts() {
+  try {
+    const c = await api('/api/notify/settings');
+    NF_KINDS.forEach(k => { const el = $('nf-' + k); if (el) el.checked = !!c[k]; });
+    $('nf-conf').value = c.call_min_confidence;
+    $('nf-warn').style.display = c.configured ? 'none' : '';
+  } catch (e) { DOM.setText('nf-msg', 'Could not load: ' + e.message); }
+}
+
+async function saveAlerts() {
+  const body = { call_min_confidence: parseFloat($('nf-conf').value) || 80 };
+  NF_KINDS.forEach(k => { body[k] = $('nf-' + k).checked; });
+  try { await post('/api/notify/settings', body); DOM.setText('nf-msg', 'Saved.'); }
+  catch (e) { DOM.setText('nf-msg', e.message); }
+}
+
+async function testAlert() {
+  DOM.setText('nf-msg', 'Sending…');
+  try { const r = await post('/api/notify/test', {}); DOM.setText('nf-msg', r.detail); }
+  catch (e) { DOM.setText('nf-msg', e.message); }
+}
+
 function wireSettings() {
+  $('nf-save')?.addEventListener('click', saveAlerts);
+  $('nf-test')?.addEventListener('click', testAlert);
+  $('at-settings-btn')?.addEventListener('click', loadAlerts);
   $('at-settings-btn')?.addEventListener('click', openSettings);
   $('as-save')?.addEventListener('click', saveSettings);
   $('as-reset')?.addEventListener('click', resetSettings);
