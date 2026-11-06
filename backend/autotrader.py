@@ -7,10 +7,13 @@ contract with virtual money. It runs on the server, so it keeps working with the
 Safety rules (all enforced in `decide`):
   * OFF until the user turns it on; it only ever touches the paper portfolio, never a broker;
   * confidence >= min_confidence (default 85);
-  * at most max_trades_per_day new auto orders per day (default 5) and max_positions open at once (default 5);
+  * Nifty 50 may be traded several times a day (nifty_max_per_day, default 10) but only ONE position at a time: the next
+    Nifty order waits until the previous one has hit its target or stop;
+  * every other stock at most stock_max_per_day orders a day (default 1), changeable in Settings, also per stock;
+  * at most max_trades_per_day new auto orders a day for the stocks together (default 5), max_positions open at once (default 5);
   * one auto position per underlying at a time, and one order per symbol per candle;
-  * entries only inside the entry window (default 09:30-14:30 IST). There is no end-of-day square-off: a position stays
-    open until its stop or target is hit (or the user exits it).
+  * entries only inside the entry window (default 09:30-14:30 IST). The product decides what happens at the close:
+    CARRYFORWARD (default) stays open until its stop or target is hit (or the user exits it); INTRADAY is squared off at 15:15 IST.
 
 Everything that touches the database or the network goes through `Deps` / `Store`, so the logic is unit-tested
 without either.
@@ -37,6 +40,9 @@ DEFAULTS = {
     "sl_pct": 0.30,                  # option stop: -30% of the premium paid
     "tp_pct": 0.30,                  # option target: +30%
     "lots": 1,
+    "nifty_max_per_day": 10,         # Nifty 50: orders a day (one open at a time)
+    "stock_max_per_day": 1,          # every other underlying: orders a day each
+    "product": "CARRYFORWARD",       # INTRADAY (squared off at 15:15 IST) or CARRYFORWARD (kept until stop/target)
     "nifty_qty": 130,                # Nifty options are always bought in this quantity (2 lots of 65)
     "entry_from_min": 9 * 60 + 30,   # IST minutes since midnight
     "entry_to_min": 14 * 60 + 30,
@@ -46,12 +52,15 @@ DEFAULTS = {
 }
 
 # What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
-USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols"}
+USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols",
+             "nifty_max_per_day", "stock_max_per_day", "product"}
+PRODUCTS = ("INTRADAY", "CARRYFORWARD")
+SQUAREOFF_MIN = 15 * 60 + 15      # INTRADAY auto positions are closed from 15:15 IST
 # The first version of the settings row saved the WHOLE config (including old stop/target values), so when it is migrated
 # only the keys that were genuinely user choices are carried over.
 LEGACY_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe"}
 SETTINGS_KEY, LEGACY_SETTINGS_KEY, LAST_SCAN_KEY = "autotrade_v2", "autotrade", "autotrade_last_scan"
-SYMBOL_FIELDS = {"sl_pct": (0.05, 0.90), "tp_pct": (0.05, 3.00), "lots": (1, 100)}
+SYMBOL_FIELDS = {"sl_pct": (0.05, 0.90), "tp_pct": (0.05, 3.00), "lots": (1, 100), "max_per_day": (1, 50)}
 
 LTP_TRIES = 3
 LTP_RETRY_SLEEP = 1.5
@@ -150,8 +159,11 @@ def pick_contract(contracts: list, spot: float, today: dt.date, opt_type: str, m
     return min(pool, key=lambda c: (abs(c["strike"] - spot), c["strike"]))
 
 
-def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0) -> tuple:
-    """Return (take_it, reason). The first failing rule is the reason."""
+def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0,
+           by_und: Optional[dict] = None) -> tuple:
+    """Return (take_it, reason). The first failing rule is the reason.
+    `orders_today` is the number of auto orders today for stocks other than Nifty (the shared daily cap);
+    `by_und` is {underlying: orders today}, for the per-underlying daily limit."""
     if not result.get("ok", False) or result.get("call") not in ("BUY CE", "BUY PE"):
         return False, result.get("note") or "no call"
     if result["confidence"] < cfg["min_confidence"]:
@@ -159,17 +171,22 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
     m = minutes(now)
     if not (cfg["entry_from_min"] <= m <= cfg["entry_to_min"]):
         return False, "outside the entry window"
-    if orders_today >= cfg["max_trades_per_day"]:
-        return False, f"daily limit reached ({orders_today} auto trades today, max {cfg['max_trades_per_day']})"
-    if len(open_auto) >= cfg["max_positions"]:
-        return False, f"already {len(open_auto)} auto positions open (max {cfg['max_positions']})"
     und = underlying_of(result["sym"])
     if und is None:
         return False, "no NSE option chain for this symbol"
-    if not symbol_params(cfg, und)["enabled"]:
+    if und != "NIFTY" and orders_today >= cfg["max_trades_per_day"]:
+        return False, f"daily limit reached ({orders_today} auto trades today, max {cfg['max_trades_per_day']})"
+    if len(open_auto) >= cfg["max_positions"]:
+        return False, f"already {len(open_auto)} auto positions open (max {cfg['max_positions']})"
+    sp = symbol_params(cfg, und)
+    if not sp["enabled"]:
         return False, f"auto-trading is switched off for {und} in Settings"
     if any(underlying_from_contract(p["symbol"]) == und for p in open_auto):
-        return False, f"{und} already has an open auto position"
+        return False, (f"Nifty already has an open position: waiting for it to hit its target or stop" if und == "NIFTY"
+                       else f"{und} already has an open auto position")
+    done = (by_und or {}).get(und, 0)
+    if done >= sp["max_per_day"]:
+        return False, f"{und} already had {done} auto order{'s' if done != 1 else ''} today (limit {sp['max_per_day']} a day, see Settings)"
     if acted_on_candle:
         return False, "already acted on this candle"
     return True, "ok"
@@ -190,6 +207,8 @@ class Store:
     async def open_auto_positions(self) -> list: raise NotImplementedError
     async def acted_on(self, symbol: str, candle_ts: int) -> bool: raise NotImplementedError
     async def orders_today(self, day: dt.date) -> int: raise NotImplementedError
+    async def orders_today_by_und(self, day: dt.date) -> dict:
+        return {}
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
     async def save_last_scan(self, scan: dict) -> None: return None
@@ -227,7 +246,7 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
 
     results = await asyncio.gather(*(one(s) for s in cfg["universe"]))
     decisions = []
-    placed_today = await store.orders_today(now.date())
+    by_und = dict(await store.orders_today_by_und(now.date()))
     previewed = []                      # a dry run counts what it WOULD open, so the position limit still applies
     # strongest calls first, so the position limit goes to the best ones
     for r in sorted(results, key=lambda x: (x.get("call") == "WAIT", -(x.get("confidence") or 0))):
@@ -238,14 +257,16 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
         if r.get("call") in ("BUY CE", "BUY PE"):
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
-            ok, why = decide(r, cfg, open_auto, now, acted, placed_today)
+            others = sum(n for u, n in by_und.items() if u != "NIFTY")
+            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und)
             row["detail"] = ""
             if not ok:
                 row["detail"] = why
             else:
                 row.update(await _order(store, cfg, deps, r, now, dry))
                 if row["action"] in ("ORDER", "WOULD ORDER"):
-                    placed_today += 1
+                    u = underlying_of(r["sym"]) or r["sym"]
+                    by_und[u] = by_und.get(u, 0) + 1
                 if row["action"] == "WOULD ORDER":
                     previewed.append({"id": -1, "symbol": row["detail"].split(" ")[0]})
             await store.log(row)
@@ -275,9 +296,11 @@ def clean_symbols(raw) -> dict:
                 except (TypeError, ValueError):
                     continue
                 if lo <= x <= hi:
-                    row[f] = int(x) if f == "lots" else round(x, 4)
+                    row[f] = int(x) if f in ("lots", "max_per_day") else round(x, 4)
         if v.get("enabled") is False:
             row["enabled"] = False
+        if str(v.get("product") or "").upper() in PRODUCTS:
+            row["product"] = str(v["product"]).upper()
         if row:
             out[str(k).strip().upper()] = row
     return out
@@ -287,8 +310,11 @@ def symbol_params(cfg: dict, und: Optional[str]) -> dict:
     """The stop, target, lots and on/off to use for one underlying: its own override, else the global value.
     `lots` is None when neither an override nor a global rule applies (then Nifty uses its fixed quantity)."""
     ov = (cfg.get("symbols") or {}).get(und or "", {})
+    default_cap = cfg.get("nifty_max_per_day", 10) if und == "NIFTY" else cfg.get("stock_max_per_day", 1)
+    product = ov.get("product") or (cfg.get("product") if cfg.get("product") in PRODUCTS else "CARRYFORWARD")
     return {"sl_pct": ov.get("sl_pct", cfg["sl_pct"]), "tp_pct": ov.get("tp_pct", cfg["tp_pct"]),
-            "lots": ov.get("lots"), "enabled": ov.get("enabled", True) is not False}
+            "lots": ov.get("lots"), "enabled": ov.get("enabled", True) is not False,
+            "max_per_day": int(ov.get("max_per_day") or default_cap), "product": product}
 
 
 def order_qty(und: str, lot: int, cfg: dict) -> int:
@@ -326,11 +352,16 @@ async def _order(store: Store, cfg: dict, deps: Deps, r: dict, now: dt.datetime,
     if dry:
         return {"action": "WOULD ORDER", "detail": f"{contract['symbol']} x{qty} @ {ltp:.2f} (SL {sl}, TP {tp})"}
     try:
-        pid, margin = await store.place(contract["symbol"], qty, ltp, sl, tp)
+        pid, margin = await store.place(contract["symbol"], qty, ltp, sl, tp, "MIS" if sp["product"] == "INTRADAY" else "NRML")
     except Exception as e:
         return {"action": "SKIP", "detail": f"order refused: {getattr(e, 'detail', e)}"}
     return {"action": "ORDER", "detail": f"{contract['symbol']} x{qty} @ {ltp:.2f} (SL {sl}, TP {tp}, margin {margin:,.0f})",
             "position_id": pid}
+
+
+def squareoff_due(now: dt.datetime) -> bool:
+    """INTRADAY auto positions are closed from 15:15 IST on a trading day."""
+    return now.weekday() < 5 and minutes(now) >= SQUAREOFF_MIN
 
 
 def seconds_to_next_run(now_ts: float, every: int = 300, settle: int = 8) -> float:
@@ -351,9 +382,17 @@ class PgStore(Store):
         return [dict(r) for r in rows]
 
     async def orders_today(self, day: dt.date) -> int:
+        return sum((await self.orders_today_by_und(day)).values())
+
+    async def orders_today_by_und(self, day: dt.date) -> dict:
         async with self.pool.acquire() as conn:
-            return int(await conn.fetchval(
-                "SELECT COUNT(*) FROM autotrade_log WHERE action = 'ORDER' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1", day))
+            rows = await conn.fetch(
+                "SELECT symbol, COUNT(*) AS n FROM autotrade_log WHERE action = 'ORDER' AND (ts AT TIME ZONE 'Asia/Kolkata')::date = $1 GROUP BY symbol", day)
+        out: dict = {}
+        for r in rows:
+            und = underlying_of(r["symbol"]) or str(r["symbol"]).upper()
+            out[und] = out.get(und, 0) + int(r["n"])
+        return out
 
     async def acted_on(self, symbol: str, candle_ts: int) -> bool:
         async with self.pool.acquire() as conn:
@@ -361,10 +400,10 @@ class PgStore(Store):
                 "SELECT 1 FROM autotrade_log WHERE symbol = $1 AND candle_ts = $2 AND action = 'ORDER' LIMIT 1",
                 symbol, candle_ts))
 
-    async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple:
+    async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float, product: str = "NRML") -> tuple:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                return await self._open_position(conn, symbol, "LONG", qty, price, sl, tp, "MARKET", "MIS", symbol, source="auto")
+                return await self._open_position(conn, symbol, "LONG", qty, price, sl, tp, "MARKET", product, symbol, source="auto")
 
     async def save_last_scan(self, scan: dict) -> None:
         slim = [{k: v for k, v in r.items() if k != "candle_ts"} for r in scan["rows"]]

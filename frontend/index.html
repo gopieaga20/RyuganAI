@@ -1223,6 +1223,10 @@
               <label>Default stop-loss %<input id="as-sl" type="number" min="5" max="90" step="1"></label>
               <label>Default target %<input id="as-tp" type="number" min="5" max="300" step="1"></label>
               <label>Default lots<input id="as-lots" type="number" min="1" max="100" step="1"></label>
+              <label title="Nifty 50 can be traded several times a day, but only one position at a time: the next order waits until the previous one hits its target or stop">Nifty 50 orders a day<input id="as-nifty-day" type="number" min="1" max="50" step="1"></label>
+              <label title="Every other stock: how many orders each may get per day">Other stocks: orders a day each<input id="as-stock-day" type="number" min="1" max="20" step="1"></label>
+              <label title="Intraday positions are squared off at 15:15 IST. Carry-forward positions stay open until the stop or target is hit">Product
+                <select id="as-product"><option value="CARRYFORWARD">Carry-forward (NRML)</option><option value="INTRADAY">Intraday (MIS)</option></select></label>
             </div>
             <div class="at-set-sub">Telegram alerts <span class="muted small">(a message to your phone for orders, stop-loss and target hits, and strong calls)</span></div>
             <div class="nf-box" id="nf-box">
@@ -1231,6 +1235,9 @@
               <label class="nf-check"><input type="checkbox" id="nf-live_orders"> Live orders placed</label>
               <label class="nf-check"><input type="checkbox" id="nf-live_exits"> Live stop-loss / target / trailing hits</label>
               <label class="nf-check"><input type="checkbox" id="nf-paper"> Paper auto-trade orders and exits</label>
+              <label class="nf-check"><input type="checkbox" id="nf-positions"> Open positions: in a loss, or close to the stop-loss / target</label>
+              <label class="nf-check nf-sub">Loss alert from <input id="nf-loss" type="number" min="1" max="90" step="1" style="width:64px"> % below entry, then every further 10%</label>
+              <label class="nf-check nf-sub">"Close to" means <input id="nf-near" type="number" min="50" max="99" step="1" style="width:64px"> % of the way to the stop or target</label>
               <label class="nf-check"><input type="checkbox" id="nf-calls"> Calls at or above <input id="nf-conf" type="number" min="1" max="100" step="1" style="width:64px"> % confidence</label>
               <div class="at-set-actions">
                 <button type="button" class="btn btn-primary btn-sm" id="nf-save">Save alerts</button>
@@ -1241,7 +1248,7 @@
             <div class="at-set-sub">Per stock <span class="muted small">(stop-loss and target are % of the option premium paid; a stock left at the defaults follows them)</span></div>
             <div class="tbl-wrap">
               <table class="dtbl as-table">
-                <thead><tr><th>Trade</th><th>Stock</th><th>Stop-loss %</th><th>Target %</th><th>Lots</th><th>Quantity</th><th></th></tr></thead>
+                <thead><tr><th>Trade</th><th>Stock</th><th>Stop-loss %</th><th>Target %</th><th>Lots</th><th>Orders a day</th><th>Product</th><th>Quantity</th><th></th></tr></thead>
                 <tbody id="as-rows"></tbody>
               </table>
             </div>

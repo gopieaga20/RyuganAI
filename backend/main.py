@@ -131,6 +131,18 @@ async def _run_autotrade_cycle(pool, dry=False, now=None):
         _autotrade_state["running"] = False
 
 
+async def _position_alerts(pool, pid: str, label: str, symbol: str, entry: float, ltp: float, stop: Optional[float], target: Optional[float], long: bool = True):
+    """Tell the user when an open position is in a loss, or close to its stop or target. Never raises."""
+    try:
+        cfg = await notify.load_settings(pool)
+        if not (cfg["enabled"] and cfg["positions"] and notify.configured()):
+            return
+        for key, text in notify.position_alerts(label, symbol, entry, ltp, stop, target, long, cfg["loss_alert_pct"], cfg["near_pct"]):
+            await notify.notify(pool, "positions", text, key=f"{pid}:{key}")
+    except Exception as e:
+        print(f"[WARN] position alert skipped: {e}")
+
+
 async def _notify_scan(pool, rows: list):
     """Alerts from one scan: orders the auto-trader placed, and strong calls (once per symbol per candle)."""
     try:
@@ -356,6 +368,11 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                 if ltp is None:
                     continue
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
+                if (not reason and pos["source"] == "auto" and pos["product"] == "MIS" and autotrader.squareoff_due(autotrader.now_ist())):
+                    reason = "Auto square-off 15:15"            # an INTRADAY auto position does not stay open past the close
+                if not reason:
+                    await _position_alerts(pool, f"paper{pos['id']}", "PAPER" + (" AUTO" if pos["source"] == "auto" else ""), pos["symbol"],
+                                           float(pos["entry_price"]), ltp, float(pos["sl"]), float(pos["tp"]), pos["type"] == "LONG")
                 if reason:
                     pnl = await _close_position(pool, pos["id"], ltp, reason)
                     if pnl is not None:
@@ -796,6 +813,8 @@ class SymbolSetting(BaseModel):
     tp_pct: Optional[float] = Field(default=None, ge=0.05, le=3.0)
     lots: Optional[int] = Field(default=None, ge=1, le=100)
     enabled: Optional[bool] = None
+    max_per_day: Optional[int] = Field(default=None, ge=1, le=50)
+    product: Optional[str] = Field(default=None, pattern="^(INTRADAY|CARRYFORWARD)$")
 
 
 class AutoTradeSettings(BaseModel):
@@ -805,6 +824,9 @@ class AutoTradeSettings(BaseModel):
     sl_pct: Optional[float] = Field(default=None, ge=0.05, le=0.90)
     tp_pct: Optional[float] = Field(default=None, ge=0.05, le=3.0)
     lots: Optional[int] = Field(default=None, ge=1, le=100)
+    nifty_max_per_day: Optional[int] = Field(default=None, ge=1, le=50)
+    stock_max_per_day: Optional[int] = Field(default=None, ge=1, le=20)
+    product: Optional[str] = Field(default=None, pattern="^(INTRADAY|CARRYFORWARD)$")
     universe: Optional[list[str]] = Field(default=None, max_length=60)
     symbols: Optional[dict[str, SymbolSetting]] = None
 
@@ -820,10 +842,13 @@ def _settings_view(cfg: dict) -> dict:
         default_lots = (max(1, round(cfg["nifty_qty"] / lot)) if (und == "NIFTY" and lot and cfg.get("nifty_qty")) else cfg["lots"])
         rows.append({
             "symbol": sym, "underlying": und, "lot_size": lot, "tradable": und is not None,
-            "default": {"sl_pct": cfg["sl_pct"], "tp_pct": cfg["tp_pct"], "lots": default_lots},
-            "value": {"sl_pct": sp["sl_pct"], "tp_pct": sp["tp_pct"], "lots": sp["lots"] or default_lots, "enabled": sp["enabled"]},
+            "default": {"sl_pct": cfg["sl_pct"], "tp_pct": cfg["tp_pct"], "lots": default_lots,
+                        "max_per_day": cfg["nifty_max_per_day"] if und == "NIFTY" else cfg["stock_max_per_day"], "product": cfg["product"]},
+            "value": {"sl_pct": sp["sl_pct"], "tp_pct": sp["tp_pct"], "lots": sp["lots"] or default_lots, "enabled": sp["enabled"],
+                      "max_per_day": sp["max_per_day"], "product": sp["product"]},
         })
-    return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe")},
+    return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe",
+                                                              "nifty_max_per_day", "stock_max_per_day", "product")},
             "symbols": rows}
 
 
@@ -856,6 +881,9 @@ class NotifySettings(BaseModel):
     live_exits: bool = True
     paper: bool = True
     calls: bool = True
+    positions: bool = True
+    loss_alert_pct: float = Field(default=5, ge=1, le=90)
+    near_pct: float = Field(default=80, ge=50, le=99)
     call_min_confidence: float = Field(default=80, ge=1, le=100)
 
 
@@ -1231,6 +1259,7 @@ async def _live_exit_tick(pool):
             if claimed:
                 await _live_send_exit(pool, r, min(int(r["qty"]), held), ev["action"], float(ltp))
         else:
+            await _position_alerts(pool, f"live{r['id']}", "LIVE", r["symbol"], entry, float(ltp), ev["stop"], ev["target"])
             old = (float(r["peak"] or 0), float(r["stop"]) if r["stop"] is not None else None, float(r["target"]) if r["target"] is not None else None)
             if (ev["peak"], ev["stop"], ev["target"]) != old:
                 async with pool.acquire() as conn:

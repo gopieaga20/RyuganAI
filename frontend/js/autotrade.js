@@ -106,9 +106,11 @@ function renderSettingsRows() {
       <td><input type="number" class="as-sl" min="5" max="90" step="1" value="${pct(v.sl_pct)}" ${off ? 'disabled' : ''}></td>
       <td><input type="number" class="as-tp" min="5" max="300" step="1" value="${pct(v.tp_pct)}" ${off ? 'disabled' : ''}></td>
       <td><input type="number" class="as-lots" min="1" max="100" step="1" value="${v.lots}" ${off ? 'disabled' : ''}></td>
+      <td><input type="number" class="as-day" min="1" max="50" step="1" value="${v.max_per_day}" ${off ? 'disabled' : ''} title="${r.underlying === 'NIFTY' ? 'Nifty: one position at a time' : 'Orders per day for this stock'}"></td>
+      <td><select class="as-prod" ${off ? 'disabled' : ''}><option value="CARRYFORWARD" ${v.product === 'CARRYFORWARD' ? 'selected' : ''}>NRML</option><option value="INTRADAY" ${v.product === 'INTRADAY' ? 'selected' : ''}>MIS</option></select></td>
       <td class="mono muted as-units">${r.lot_size ? `${v.lots * r.lot_size} units (lot ${r.lot_size})` : ''}</td>
       <td><button type="button" class="x as-del" title="Remove from the auto-trade list">×</button></td></tr>`;
-  }).join('') || '<tr><td colspan="7" class="empty-cell">No stocks. Add one below.</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="empty-cell">No stocks. Add one below.</td></tr>';
 }
 
 function readRows() {
@@ -119,6 +121,8 @@ function readRows() {
       sl_pct: (parseFloat(tr.querySelector('.as-sl').value) || pct(r.value.sl_pct)) / 100,
       tp_pct: (parseFloat(tr.querySelector('.as-tp').value) || pct(r.value.tp_pct)) / 100,
       lots: Math.max(1, parseInt(tr.querySelector('.as-lots').value) || r.value.lots),
+      max_per_day: Math.max(1, parseInt(tr.querySelector('.as-day').value) || r.value.max_per_day),
+      product: tr.querySelector('.as-prod').value,
     };
   });
 }
@@ -127,6 +131,7 @@ function applySettingsView(d) {
   const s = d.settings;
   $('as-conf').value = s.min_confidence; $('as-maxpos').value = s.max_positions; $('as-maxday').value = s.max_trades_per_day;
   $('as-sl').value = pct(s.sl_pct); $('as-tp').value = pct(s.tp_pct); $('as-lots').value = s.lots;
+  $('as-nifty-day').value = s.nifty_max_per_day; $('as-stock-day').value = s.stock_max_per_day; $('as-product').value = s.product;
   settingsRows = d.symbols.map(r => ({ ...r, value: { ...r.value } }));
   renderSettingsRows();
 }
@@ -145,7 +150,8 @@ async function openSettings() {
 async function saveSettings() {
   readRows();
   const msg = $('as-msg'); msg.style.color = 'var(--text3)'; msg.textContent = 'Saving…';
-  const g = { sl: num('as-sl', 30) / 100, tp: num('as-tp', 30) / 100, lots: Math.max(1, Math.round(num('as-lots', 1))) };
+  const g = { sl: num('as-sl', 30) / 100, tp: num('as-tp', 30) / 100, lots: Math.max(1, Math.round(num('as-lots', 1))),
+    nifty: Math.max(1, Math.round(num('as-nifty-day', 10))), stock: Math.max(1, Math.round(num('as-stock-day', 1))), product: $('as-product').value };
   // send a symbol override only where it differs from what that symbol would get anyway
   const symbols = {};
   for (const r of settingsRows) {
@@ -155,13 +161,16 @@ async function saveSettings() {
     if (Math.abs(v.tp_pct - g.tp) > 1e-9) ov.tp_pct = v.tp_pct;
     const defLots = r.underlying === 'NIFTY' ? r.default.lots : g.lots;
     if (v.lots !== defLots) ov.lots = v.lots;
+    if (v.max_per_day !== (r.underlying === 'NIFTY' ? g.nifty : g.stock)) ov.max_per_day = v.max_per_day;
+    if (v.product !== g.product) ov.product = v.product;
     if (!v.enabled) ov.enabled = false;
     if (Object.keys(ov).length) symbols[r.underlying] = ov;
   }
   try {
     const d = await post('/api/autotrade/settings', {
       min_confidence: Math.round(num('as-conf', 85)), max_positions: Math.round(num('as-maxpos', 5)), max_trades_per_day: Math.round(num('as-maxday', 5)),
-      sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, universe: settingsRows.map(r => r.symbol), symbols,
+      sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, nifty_max_per_day: g.nifty, stock_max_per_day: g.stock, product: g.product,
+      universe: settingsRows.map(r => r.symbol), symbols,
     });
     applySettingsView(d);
     msg.style.color = 'var(--green)'; msg.textContent = 'Saved. New orders use these settings; open positions keep the levels they were opened with.';
@@ -174,7 +183,8 @@ async function resetSettings() {
   readRows();
   try {
     applySettingsView(await post('/api/autotrade/settings', {
-      min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, symbols: {}, universe: settingsRows.map(r => r.symbol),
+      min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 10, stock_max_per_day: 1,
+      product: 'CARRYFORWARD', symbols: {}, universe: settingsRows.map(r => r.symbol),
     }));
     $('as-msg').style.color = 'var(--green)'; $('as-msg').textContent = 'Reset to defaults.';
     refreshAutoTrade();
@@ -187,26 +197,27 @@ function addSymbol() {
   if (settingsRows.some(r => r.symbol.toUpperCase() === sym)) { $('as-msg').textContent = `${sym} is already in the list.`; return; }
   readRows();
   const g = { sl: num('as-sl', 30) / 100, tp: num('as-tp', 30) / 100, lots: Math.max(1, Math.round(num('as-lots', 1))) };
+  const day = Math.max(1, Math.round(num('as-stock-day', 1))), product = $('as-product').value;
   settingsRows.push({ symbol: sym, underlying: sym.replace(/\s+/g, ''), lot_size: null, tradable: true,
-    default: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots }, value: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, enabled: true } });
+    default: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_per_day: day, product }, value: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, enabled: true, max_per_day: day, product } });
   input.value = ''; renderSettingsRows();
   $('as-msg').style.color = 'var(--text3)'; $('as-msg').textContent = `${sym} added. Press Save to apply.`;
 }
 
 /* ───────────── Telegram alerts ───────────── */
-const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'calls'];
+const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'positions', 'calls'];
 
 async function loadAlerts() {
   try {
     const c = await api('/api/notify/settings');
     NF_KINDS.forEach(k => { const el = $('nf-' + k); if (el) el.checked = !!c[k]; });
-    $('nf-conf').value = c.call_min_confidence;
+    $('nf-conf').value = c.call_min_confidence; $('nf-loss').value = c.loss_alert_pct; $('nf-near').value = c.near_pct;
     $('nf-warn').style.display = c.configured ? 'none' : '';
   } catch (e) { DOM.setText('nf-msg', 'Could not load: ' + e.message); }
 }
 
 async function saveAlerts() {
-  const body = { call_min_confidence: parseFloat($('nf-conf').value) || 80 };
+  const body = { call_min_confidence: parseFloat($('nf-conf').value) || 80, loss_alert_pct: parseFloat($('nf-loss').value) || 5, near_pct: parseFloat($('nf-near').value) || 80 };
   NF_KINDS.forEach(k => { body[k] = $('nf-' + k).checked; });
   try { await post('/api/notify/settings', body); DOM.setText('nf-msg', 'Saved.'); }
   catch (e) { DOM.setText('nf-msg', e.message); }

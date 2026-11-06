@@ -16,8 +16,9 @@ from typing import Optional
 import httpx
 
 SETTINGS_KEY = "notify_settings"
-KINDS = ("live_orders", "live_exits", "paper", "calls")
-DEFAULTS = {"enabled": False, "live_orders": True, "live_exits": True, "paper": True, "calls": True, "call_min_confidence": 80}
+KINDS = ("live_orders", "live_exits", "paper", "calls", "positions")
+DEFAULTS = {"enabled": False, "live_orders": True, "live_exits": True, "paper": True, "calls": True, "positions": True,
+            "call_min_confidence": 80, "loss_alert_pct": 5, "near_pct": 80}
 SEND_TIMEOUT = 8.0
 MAX_PER_MINUTE = 20
 
@@ -43,11 +44,12 @@ def clean_settings(raw: Optional[dict]) -> dict:
     for k in ("enabled", *KINDS):
         if k in raw:
             out[k] = bool(raw[k])
-    try:
-        c = float(raw.get("call_min_confidence", out["call_min_confidence"]))
-    except (TypeError, ValueError):
-        c = out["call_min_confidence"]
-    out["call_min_confidence"] = min(100.0, max(1.0, c))
+    for key, lo, hi in (("call_min_confidence", 1.0, 100.0), ("loss_alert_pct", 1.0, 90.0), ("near_pct", 50.0, 99.0)):
+        try:
+            c = float(raw.get(key, out[key]))
+        except (TypeError, ValueError):
+            c = out[key]
+        out[key] = min(hi, max(lo, c))
     return out
 
 
@@ -209,3 +211,29 @@ def strong_call(row: dict) -> str:
     return (f"CALL {row.get('confidence')}%: {row.get('call')} on {row.get('symbol')}\n"
             f"Price {_inr(row.get('price'))}" + (f" · news {row['news']}" if row.get("news") else "") +
             "\nA signal only, not a recommendation. Nothing was ordered because of this message.")
+
+
+def position_alerts(label: str, symbol: str, entry: float, ltp: float, stop: Optional[float], target: Optional[float],
+                    long: bool = True, loss_pct: float = 5.0, near_pct: float = 80.0) -> list:
+    """Alerts for one open position at the current price: [(key, text)]. Each key is stable for the same situation, so the
+    caller's de-duplication sends it once.
+      * in a loss: first when the loss reaches `loss_pct` of the entry price, then again at every further 10% step;
+      * near the stop / near the target: when the price has covered `near_pct` % of the way from the entry to that level."""
+    out = []
+    if not entry or not ltp:
+        return out
+    move = (ltp - entry) / entry * 100 if long else (entry - ltp) / entry * 100
+    if move <= -loss_pct:
+        step = int((-move - loss_pct) // 10)
+        out.append((f"loss{step}", f"{label} POSITION IN LOSS\n{symbol}: {_inr(ltp)} vs entry {_inr(entry)} ({move:+.1f}%)"
+                    + (f"\nStop-loss at {_inr(stop)}" if stop else "")))
+    frac = near_pct / 100.0
+    if stop and ((entry - stop) if long else (stop - entry)) > 0:
+        done = ((entry - ltp) if long else (ltp - entry)) / ((entry - stop) if long else (stop - entry))
+        if frac <= done < 1:
+            out.append(("nearsl", f"{label} NEAR STOP-LOSS\n{symbol}: {_inr(ltp)}, stop-loss at {_inr(stop)} (entry {_inr(entry)}). {done * 100:.0f}% of the way to the stop."))
+    if target and ((target - entry) if long else (entry - target)) > 0:
+        done = ((ltp - entry) if long else (entry - ltp)) / ((target - entry) if long else (entry - target))
+        if frac <= done < 1:
+            out.append(("neartp", f"{label} NEAR TARGET\n{symbol}: {_inr(ltp)}, target at {_inr(target)} (entry {_inr(entry)}). {done * 100:.0f}% of the way to the target."))
+    return out

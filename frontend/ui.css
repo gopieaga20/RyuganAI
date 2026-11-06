@@ -608,3 +608,6 @@ body.chart-full-open { overflow: hidden; }
 .nf-check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--tx-2)}
 .nf-check input[type=checkbox]{width:auto;height:auto}
 .nf-warn{font-size:12px;font-weight:600;color:var(--amber,#f5a524)}
+.nf-sub{margin-left:22px}
+.as-table select{width:auto;height:28px;padding:0 6px;font-size:12px}
+.as-table .as-day{width:64px}

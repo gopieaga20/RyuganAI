@@ -213,3 +213,55 @@ def test_the_exit_is_sent_even_if_the_alert_system_is_broken(watch, sent, monkey
     watch["positions"], watch["ltp"] = pos(), 60.0
     run(main._live_exit_tick(db))
     assert len(watch["sent"]) == 1 and sent == [] and db.rows[0]["state"] == "EXIT_SENT"
+
+
+# ───────────── open-position alerts: in a loss, near stop, near target ─────────────
+def keys(alerts):
+    return [k for k, _ in alerts]
+
+
+def test_no_alert_for_a_position_that_is_fine():
+    assert notify.position_alerts("PAPER", "X", 100.0, 101.0, 70.0, 130.0) == []
+    assert notify.position_alerts("PAPER", "X", 100.0, 97.0, 70.0, 130.0) == []            # -3% is under the 5% loss alert
+
+
+def test_a_loss_alerts_at_five_percent_then_at_every_further_ten():
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 94.0, 50.0, 130.0)) == ["loss0"]
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 86.0, 50.0, 130.0)) == ["loss0"]    # -14%: still the first step
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 84.0, 50.0, 130.0)) == ["loss1"]    # -16%
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 74.0, 50.0, 130.0)) == ["loss2"]
+    text = notify.position_alerts("LIVE", "NIFTY10NOV2623950CE", 140.0, 126.0, 98.0, 210.0)[0][1]
+    assert text.startswith("LIVE POSITION IN LOSS") and "-10.0%" in text and "98.00" in text
+
+
+def test_near_stop_and_near_target_at_eighty_percent_of_the_way():
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 76.0, 70.0, 130.0)) == ["loss1", "nearsl"]        # 80% of the way to the stop
+    near = notify.position_alerts("PAPER", "X", 100.0, 125.0, 70.0, 130.0)
+    assert keys(near) == ["neartp"] and "83% of the way to the target" in near[0][1]
+    assert notify.position_alerts("PAPER", "X", 100.0, 120.0, 70.0, 130.0) == []                 # only 67% of the way
+    assert notify.position_alerts("PAPER", "X", 100.0, 131.0, 70.0, 130.0) == []                 # past the target: the exit handles it
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 75.0, 70.0, 130.0, near_pct=90)) == ["loss2"]   # near_pct 90: not near the stop yet at 83%
+
+
+def test_a_short_position_is_mirrored():
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 107.0, 120.0, 70.0, long=False)) == ["loss0"]
+    assert keys(notify.position_alerts("PAPER", "X", 100.0, 75.0, 120.0, 70.0, long=False)) == ["neartp"]
+
+
+def test_position_alerts_are_sent_once_and_obey_their_switch(sent):
+    pool = SettingsPool(ON)
+    run(main._position_alerts(pool, "paper7", "PAPER AUTO", "RELIANCE24NOV1300CE", 100.0, 92.0, 70.0, 130.0))
+    run(main._position_alerts(pool, "paper7", "PAPER AUTO", "RELIANCE24NOV1300CE", 100.0, 91.0, 70.0, 130.0))   # same step: not repeated
+    assert len(sent) == 1 and sent[0].startswith("PAPER AUTO POSITION IN LOSS")
+    run(main._position_alerts(pool, "paper7", "PAPER AUTO", "RELIANCE24NOV1300CE", 100.0, 80.0, 70.0, 130.0))   # a deeper step
+    assert len(sent) == 2
+    off = SettingsPool({**ON, "positions": False})
+    notify._cache.update(at=0.0, value=None)
+    run(main._position_alerts(off, "paper8", "PAPER", "X", 100.0, 60.0, 50.0, 130.0))
+    assert len(sent) == 2
+
+
+def test_alert_thresholds_are_cleaned():
+    c = notify.clean_settings({"loss_alert_pct": 0, "near_pct": 200})
+    assert c["loss_alert_pct"] == 1 and c["near_pct"] == 99
+    assert notify.clean_settings(None)["positions"] is True and notify.clean_settings(None)["near_pct"] == 80

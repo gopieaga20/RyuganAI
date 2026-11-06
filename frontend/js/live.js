@@ -37,9 +37,11 @@ async function refreshStatus() {
   $('lv-funds').innerHTML = !f ? '<span class="muted">Funds unavailable (no Angel session).</span>' : f.error ? `<span class="muted">Funds unavailable: ${DOM.esc(f.error)}</span>`
     : `<div><span>Available cash</span><b>${inr(f.available_cash)}</b></div><div><span>Net</span><b>${inr(f.net)}</b></div><div><span>Orders sent today</span><b>${status.orders_today}</b></div>`;
   const L = status.limits || {};
-  if (document.activeElement?.id !== 'lv-lim-value') $('lv-lim-value').value = L.max_order_value ?? '';
-  if (document.activeElement?.id !== 'lv-lim-lots') $('lv-lim-lots').value = L.max_lots ?? '';
-  if (document.activeElement?.id !== 'lv-lim-loss') $('lv-lim-loss').value = L.max_daily_loss ?? '';
+  // fill a box from the server only if you have not touched it: the page refreshes every few seconds and must not erase what you are typing
+  [['lv-lim-value', L.max_order_value], ['lv-lim-lots', L.max_lots], ['lv-lim-loss', L.max_daily_loss]].forEach(([id, v]) => {
+    const el = $(id);
+    if (document.activeElement !== el && !el.dataset.dirty) el.value = v ?? '';
+  });
   const note = $('lv-limits-note');
   note.textContent = status.limits_ready ? '' : 'Set the three limits below before any live order can be accepted.';
   note.style.display = status.limits_ready ? 'none' : '';
@@ -68,6 +70,7 @@ async function saveLimits() {
   try {
     await api('/api/live/limits', { max_order_value: +$('lv-lim-value').value, max_lots: +$('lv-lim-lots').value, max_daily_loss: +$('lv-lim-loss').value });
     msg.style.color = 'var(--green)'; msg.textContent = 'Saved.';
+    ['lv-lim-value', 'lv-lim-lots', 'lv-lim-loss'].forEach(id => delete $(id).dataset.dirty);
   } catch (e) { msg.style.color = 'var(--down)'; msg.textContent = 'Not saved: ' + e.message; }
   refreshStatus();
 }
@@ -269,6 +272,7 @@ export function initLive() {
   $('lv-toggle').addEventListener('click', toggleLive);
   $('lv-kill').addEventListener('click', kill);
   $('lv-lim-save').addEventListener('click', saveLimits);
+  ['lv-lim-value', 'lv-lim-lots', 'lv-lim-loss'].forEach(id => $(id).addEventListener('input', () => { $(id).dataset.dirty = '1'; }));
   $('lv-buy').addEventListener('click', () => setSide('BUY'));
   $('lv-sell').addEventListener('click', () => setSide('SELL'));
   $('lv-otype').addEventListener('change', onTypeChange);

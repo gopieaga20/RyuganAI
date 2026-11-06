@@ -126,7 +126,16 @@ class MemStore(at.Store):
     async def orders_today(self, day):
         return sum(1 for l in self.logs if l["action"] == "ORDER")
 
-    async def place(self, symbol, qty, price, sl, tp):
+    async def orders_today_by_und(self, day):
+        out = {}
+        for l in self.logs:
+            if l["action"] == "ORDER":
+                u = at.underlying_of(l["symbol"]) or l["symbol"]
+                out[u] = out.get(u, 0) + 1
+        return out
+
+    async def place(self, symbol, qty, price, sl, tp, product="NRML"):
+        self.products = getattr(self, "products", []) + [product]
         if self.refuse:
             raise RuntimeError("Insufficient margin")
         pid = len(self.positions) + 1
@@ -347,3 +356,69 @@ def test_a_dry_run_does_not_overwrite_the_last_scan(patch_scan):
     store = MemStore()
     run(at.run_cycle(store, {**CFG, "universe": ["RELIANCE"]}, make_deps(), now=MON_10AM, dry=True))
     assert store.last_scan is None
+
+
+# ───────────── Nifty one at a time, stocks once a day, product ─────────────
+NIFTY_CALL = lambda **kw: call("NIFTY 50", price=23100.0, **kw)          # noqa: E731
+
+
+def test_nifty_can_trade_many_times_a_day_but_only_one_position_at_a_time():
+    held = [{"id": 1, "symbol": "NIFTY10NOV2623100PE"}]
+    ok, why = at.decide(NIFTY_CALL(), CFG, held, MON_10AM, by_und={"NIFTY": 1})
+    assert not ok and "waiting for it to hit its target or stop" in why
+    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 1})[0]               # previous one closed: next is allowed
+    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 9})[0]               # still under the Nifty limit of 10
+    ok, why = at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 10})
+    assert not ok and "limit 10 a day" in why
+
+
+def test_nifty_is_not_stopped_by_the_shared_stock_cap():
+    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, orders_today=5, by_und={"NIFTY": 2})[0]
+    assert not at.decide(call("TCS"), CFG, [], MON_10AM, orders_today=5)[0]                 # the cap still stops the stocks
+
+
+def test_a_stock_is_traded_once_a_day_by_default_and_the_limit_is_changeable():
+    ok, why = at.decide(call("RELIANCE"), CFG, [], MON_10AM, by_und={"RELIANCE": 1})
+    assert not ok and "already had 1 auto order today" in why and "limit 1 a day" in why
+    assert at.decide(call("TCS"), CFG, [], MON_10AM, by_und={"RELIANCE": 1})[0]             # other stocks are unaffected
+    two = {**CFG, "stock_max_per_day": 2}
+    assert at.decide(call("RELIANCE"), two, [], MON_10AM, by_und={"RELIANCE": 1})[0]
+    assert not at.decide(call("RELIANCE"), two, [], MON_10AM, by_und={"RELIANCE": 2})[0]
+    own = {**CFG, "symbols": {"RELIANCE": {"max_per_day": 3}}}                              # a per-stock override wins
+    assert at.decide(call("RELIANCE"), own, [], MON_10AM, by_und={"RELIANCE": 2})[0]
+    assert not at.decide(call("TCS"), own, [], MON_10AM, by_und={"TCS": 1})[0]
+
+
+def test_a_cycle_orders_a_stock_only_once_a_day(patch_scan):
+    patch_scan({"RELIANCE": call("RELIANCE", "BUY CE", 90, 1300.0, ts=111)})
+    store = MemStore()
+    cfg = {**CFG, "universe": ["RELIANCE"]}
+    run(at.run_cycle(store, cfg, make_deps(ltp=100.0, lots={"RELIANCE": 250}), now=MON_10AM))
+    assert len(store.positions) == 1
+    store.positions.clear()                                                                   # it hit its target
+    patch_scan({"RELIANCE": call("RELIANCE", "BUY CE", 90, 1300.0, ts=222)})                 # a fresh signal on a later candle
+    out = run(at.run_cycle(store, cfg, make_deps(ltp=100.0, lots={"RELIANCE": 250}), now=MON_10AM))
+    assert len(store.positions) == 0 and "limit 1 a day" in out[0]["detail"]
+
+
+def test_the_product_is_a_setting_with_a_per_stock_override():
+    assert at.DEFAULTS["product"] == "CARRYFORWARD"
+    assert at.symbol_params(CFG, "TCS")["product"] == "CARRYFORWARD"
+    assert at.symbol_params({**CFG, "product": "INTRADAY"}, "TCS")["product"] == "INTRADAY"
+    mixed = {**CFG, "product": "INTRADAY", "symbols": at.clean_symbols({"RELIANCE": {"product": "carryforward", "max_per_day": 2}, "TCS": {"product": "bogus"}})}
+    assert at.symbol_params(mixed, "RELIANCE")["product"] == "CARRYFORWARD" and at.symbol_params(mixed, "RELIANCE")["max_per_day"] == 2
+    assert "TCS" not in mixed["symbols"] and at.symbol_params(mixed, "TCS")["product"] == "INTRADAY"
+
+
+def test_the_chosen_product_is_what_the_paper_position_gets(patch_scan):
+    patch_scan({"RELIANCE": call("RELIANCE", "BUY CE", 90, 1300.0)})
+    for chosen, stored in (("INTRADAY", "MIS"), ("CARRYFORWARD", "NRML")):
+        store = MemStore()
+        run(at.run_cycle(store, {**CFG, "universe": ["RELIANCE"], "product": chosen}, make_deps(ltp=100.0, lots={"RELIANCE": 250}), now=MON_10AM))
+        assert store.products == [stored]
+
+
+def test_intraday_square_off_time():
+    assert not at.squareoff_due(dt.datetime(2026, 11, 2, 15, 14, tzinfo=IST))
+    assert at.squareoff_due(dt.datetime(2026, 11, 2, 15, 15, tzinfo=IST))
+    assert not at.squareoff_due(dt.datetime(2026, 11, 1, 16, 0, tzinfo=IST))                  # a Sunday
