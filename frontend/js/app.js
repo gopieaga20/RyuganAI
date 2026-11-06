@@ -6,6 +6,7 @@ import { WL } from './watchlist.js';
 import { fetchLiveTickers, fetchGlobalCues, debounceSearch } from './market-data.js';
 import { refreshNiftySignal, generateSignal, qs, generateMorningBrief, analyzeFO, loadSectors } from './signals.js';
 import { askA, sendChat } from './chat.js';
+import { PAGES, parseRoute, hashFor, titleFor } from './route.js';
 import {
   toggleStrat, btFetchData, runBacktest, btReset, filterTrades,
   initReplay, rStep, togglePlay, getAIReview, askAIQa,
@@ -60,9 +61,16 @@ tick();
 /* ═══════════════════════════════════════════
    MODULE: TAB NAVIGATION
 ═══════════════════════════════════════════ */
-const ALL_TABS = ['dash', 'live', 'nifty', 'signals', 'morning', 'fo', 'sectors', 'backtest', 'analyst', 'tradelog', 'paper'];
-export function switchTab(t) {
+const ALL_TABS = PAGES;
+/** Show one page. Each page has its own address (#/paper): a click adds a history entry, so Back, Forward, refresh and bookmarks work.
+ *  `fromRoute` is set when the address itself changed (load, Back, Forward), so it is not written back. */
+export function switchTab(t, { fromRoute = false } = {}) {
   if (!ALL_TABS.includes(t)) return;
+  if (t !== 'dash' && document.getElementById('dash-chart')?.classList.contains('full')) document.getElementById('ch-full')?.click();   // leave chart full view
+  try {
+    if (!fromRoute && location.hash !== hashFor(t)) history.pushState(null, '', hashFor(t));
+    document.title = titleFor(t);
+  } catch { /* an unusual environment (file://, sandbox): navigation still works, only the address stays as it is */ }
   // Update sidebar nav active state
   document.querySelectorAll('.nav-btn').forEach(el => {
     el.classList.toggle('active', el.dataset.tab === t);
@@ -101,6 +109,11 @@ window.addEventListener('load', async () => {
   initDash();
   initAutoTrade();
   initLive();
+  // open the page named in the address (a refresh or a pasted link); an unknown or empty address means the Dashboard
+  const first = parseRoute(location.hash);
+  try { history.replaceState(null, '', hashFor(first)); } catch { }
+  switchTab(first, { fromRoute: true });
+  window.addEventListener('hashchange', () => switchTab(parseRoute(location.hash), { fromRoute: true }));   // Back / Forward / edited address
 
   // Initial data fetches
   try { await refreshPaperTrading(); await _fetchDayStats(); } catch { }
