@@ -349,31 +349,31 @@ input::placeholder, textarea::placeholder { color: var(--tx-3); }
 .rp-note { font-size: 11px; color: var(--amber); background: var(--clr-amber-muted); border-radius: 6px; padding: 6px 10px; margin-bottom: 10px; }
 .rp-bar select { width: 64px; flex: none; }
 
-/* ═══ BRAND PALETTE: white + midnight cyan (#0A2A33) ═══
+/* ═══ BRAND PALETTE: Ocean glass (deep blue, sky-blue accent) ═══
    Dark:  midnight cyan is the primary (backgrounds and cards), white is the secondary (text, primary buttons).
    Light: white is the primary (cards), midnight cyan is the secondary (text, primary buttons).
    --accent (bright cyan, deeper in light mode) is only the small highlight: focus rings, links, the active nav item. Green and red stay up and down. */
 :root {
-  --bg: #061c23; --surface: #0a2a33; --surface-2: #0f3541; --surface-3: #14424f;
+  --bg: #07142b; --surface: #0e2347; --surface-2: #142d57; --surface-3: #1b3766;
   --line: rgba(255, 255, 255, .10); --line-2: rgba(255, 255, 255, .18);
   --tx: #ffffff; --tx-2: rgba(255, 255, 255, .74); --tx-3: rgba(255, 255, 255, .58);
-  --accent: #22d3ee; --accent-rgb: 34, 211, 238; --on-accent: #04202a;
-  --brand: #ffffff; --on-brand: #0a2a33; --brand-hover: #dff3f7;
-  --down: #ff7a7a; --up: #3ddc97;
-  --chart-bg: #0a2a33; --chart-text: rgba(255, 255, 255, .62); --chart-grid: rgba(255, 255, 255, .06);
-  --clr-blue-dk: #67e2f5; --clr-border-3: rgba(255, 255, 255, .28);
+  --accent: #38bdf8; --accent-rgb: 56, 189, 248; --on-accent: #06182e;
+  --brand: #ffffff; --on-brand: #0e2347; --brand-hover: #dbeafe;
+  --down: #f87171; --up: #4ade80;
+  --chart-bg: #0e2347; --chart-text: rgba(255, 255, 255, .62); --chart-grid: rgba(255, 255, 255, .06);
+  --clr-blue-dk: #7dd3fc; --clr-border-3: rgba(255, 255, 255, .28);
   --tile-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset;
 }
 :root[data-theme="light"] {
-  --bg: #f2f8fa; --surface: #ffffff; --surface-2: #f6fafb; --surface-3: #e6f1f4;
-  --line: #dce9ed; --line-2: #c2d6dc;
-  --tx: #0a2a33; --tx-2: #35525b; --tx-3: #4f6d77;
-  --accent: #0e7490; --accent-rgb: 14, 116, 144; --on-accent: #ffffff;
-  --brand: #0a2a33; --on-brand: #ffffff; --brand-hover: #14424f;
-  --down: #c62828; --up: #0b7a57; --amber: #9a6700;
-  --chart-bg: #ffffff; --chart-text: #4f6d77; --chart-grid: rgba(10, 42, 51, .07);
-  --clr-blue-dk: #0a566b; --clr-border-3: #9fbac2;
-  --tile-shadow: 0 1px 2px rgba(10, 42, 51, .06);
+  --bg: #eef5fd; --surface: #ffffff; --surface-2: #f5f9fe; --surface-3: #e3edf9;
+  --line: #dce8f6; --line-2: #c3d5ec;
+  --tx: #0b1f3f; --tx-2: #3f5678; --tx-3: #566c8c;
+  --accent: #0369a1; --accent-rgb: 3, 105, 161; --on-accent: #ffffff;
+  --brand: #0b1f3f; --on-brand: #ffffff; --brand-hover: #14325f;
+  --down: #b91c1c; --up: #15803d; --amber: #9a6700;
+  --chart-bg: #ffffff; --chart-text: #566c8c; --chart-grid: rgba(11, 31, 63, .07);
+  --clr-blue-dk: #075985; --clr-border-3: #9db4d6;
+  --tile-shadow: 0 1px 2px rgba(11, 31, 63, .06);
 }
 /* primary / secondary buttons carry the white-vs-midnight swap */
 .btn-primary, .btn-primary:disabled { background: var(--brand); color: var(--on-brand); }
@@ -690,13 +690,13 @@ table.scan-table tbody tr.active, table.scan-table tbody tr.scan-row.active { bo
 :root {
   --depth-1: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 6px 16px -6px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .30);
   --depth-2: 0 1px 0 rgba(255, 255, 255, .09) inset, 0 14px 26px -10px rgba(0, 0, 0, .65), 0 3px 8px rgba(0, 0, 0, .30);
-  --depth-btn: 0 1px 0 rgba(255, 255, 255, .55) inset, 0 -2px 0 rgba(10, 42, 51, .18) inset, 0 4px 10px -3px rgba(0, 0, 0, .5);
+  --depth-btn: 0 1px 0 rgba(255, 255, 255, .55) inset, 0 -2px 0 rgba(11, 31, 63, .18) inset, 0 4px 10px -3px rgba(0, 0, 0, .5);
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(255, 255, 255, 0) 42%);
 }
 :root[data-theme="light"] {
-  --depth-1: 0 1px 0 #ffffff inset, 0 6px 16px -8px rgba(10, 42, 51, .22), 0 1px 3px rgba(10, 42, 51, .08);
-  --depth-2: 0 1px 0 #ffffff inset, 0 14px 26px -12px rgba(10, 42, 51, .30), 0 3px 8px rgba(10, 42, 51, .10);
-  --depth-btn: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 -2px 0 rgba(0, 0, 0, .28) inset, 0 4px 10px -3px rgba(10, 42, 51, .45);
+  --depth-1: 0 1px 0 #ffffff inset, 0 6px 16px -8px rgba(11, 31, 63, .22), 0 1px 3px rgba(11, 31, 63, .08);
+  --depth-2: 0 1px 0 #ffffff inset, 0 14px 26px -12px rgba(11, 31, 63, .30), 0 3px 8px rgba(11, 31, 63, .10);
+  --depth-btn: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 -2px 0 rgba(0, 0, 0, .28) inset, 0 4px 10px -3px rgba(11, 31, 63, .45);
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, .9), rgba(255, 255, 255, 0) 45%);
 }
 .card, .panel, .dash-card, .dash-chart, .stat-card { box-shadow: var(--depth-1); background-image: var(--sheen); }
@@ -821,14 +821,14 @@ html, body { overflow: hidden; }
    The header and the side menu are midnight cyan with white text and icons in BOTH themes. The content area is a quiet white
    (light) or deep teal (dark) behind the cards. The shell re-scopes the colour tokens to the midnight palette, so everything
    inside it (search box, index tiles, buttons, tooltips) picks up the right colours without per-element rules. */
-:root { --page: #061c23; }
-:root[data-theme="light"] { --page: #f4f9fb; }
+:root { --page: #07142b; }
+:root[data-theme="light"] { --page: #eef5fd; }
 html, body, .app, .layout, .main { background: var(--page); }
 .topbar, .sidebar {
-  --surface: #0a2a33; --surface-2: #0f3541; --surface-3: #14424f;
+  --surface: #0e2347; --surface-2: #142d57; --surface-3: #1b3766;
   --line: rgba(255, 255, 255, .14); --line-2: rgba(255, 255, 255, .24);
   --tx: #ffffff; --tx-2: rgba(255, 255, 255, .78); --tx-3: rgba(255, 255, 255, .62);
-  --accent: #22d3ee; --accent-rgb: 34, 211, 238; --clr-blue-lt: rgba(34, 211, 238, .16); --up: #3ddc97; --down: #ff7a7a; --clr-green: #3ddc97; --clr-red: #ff7a7a; --clr-text: #ffffff; --clr-text-2: rgba(255, 255, 255, .78); --clr-text-3: rgba(255, 255, 255, .62);
+  --accent: #38bdf8; --accent-rgb: 56, 189, 248; --clr-blue-lt: rgba(56, 189, 248, .16); --up: #4ade80; --down: #f87171; --clr-green: #4ade80; --clr-red: #f87171; --clr-text: #ffffff; --clr-text-2: rgba(255, 255, 255, .78); --clr-text-3: rgba(255, 255, 255, .62);
   --depth-1: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 6px 16px -6px rgba(0, 0, 0, .45), 0 1px 3px rgba(0, 0, 0, .25);
   --depth-2: 0 1px 0 rgba(255, 255, 255, .09) inset, 0 14px 26px -10px rgba(0, 0, 0, .55), 0 3px 8px rgba(0, 0, 0, .25);
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(255, 255, 255, 0) 42%);
@@ -841,10 +841,93 @@ html, body, .app, .layout, .main { background: var(--page); }
 
 /* softer shell in light mode: a mid teal instead of full midnight, so the header and menu stand out less against the white content */
 :root[data-theme="light"] .topbar, :root[data-theme="light"] .sidebar {
-  --surface: #2d5f6b; --surface-2: #386b78; --surface-3: #437784;
+  --surface: #1c437a; --surface-2: #25508c; --surface-3: #2f5d9c;
   --line: rgba(255, 255, 255, .20); --line-2: rgba(255, 255, 255, .30);
-  --depth-1: 0 1px 0 rgba(255, 255, 255, .10) inset, 0 4px 12px -6px rgba(10, 42, 51, .35), 0 1px 2px rgba(10, 42, 51, .15);
-  --depth-2: 0 1px 0 rgba(255, 255, 255, .12) inset, 0 10px 20px -10px rgba(10, 42, 51, .40), 0 2px 6px rgba(10, 42, 51, .18);
+  --depth-1: 0 1px 0 rgba(255, 255, 255, .10) inset, 0 4px 12px -6px rgba(11, 31, 63, .35), 0 1px 2px rgba(11, 31, 63, .15);
+  --depth-2: 0 1px 0 rgba(255, 255, 255, .12) inset, 0 10px 20px -10px rgba(11, 31, 63, .40), 0 2px 6px rgba(11, 31, 63, .18);
 }
-:root[data-theme="light"] .topbar, :root[data-theme="light"] .sidebar { --up: #7ff0bd; --down: #ffa3a3; --clr-green: #7ff0bd; --clr-red: #ffa3a3; }
-:root[data-theme="light"] .nav-btn .nav-label, :root[data-theme="light"] .sidebar:hover .nav-btn .nav-label { background: #0a2a33; border-color: rgba(255, 255, 255, .2); }
+:root[data-theme="light"] .topbar, :root[data-theme="light"] .sidebar { --up: #86efac; --down: #fca5a5; --clr-green: #86efac; --clr-red: #fca5a5; }
+:root[data-theme="light"] .nav-btn .nav-label, :root[data-theme="light"] .sidebar:hover .nav-btn .nav-label { background: #0b1f3f; border-color: rgba(255, 255, 255, .2); }
+
+/* ═══ OCEAN GLASS ═══
+   Deep blue with a sky-blue accent. The page carries a soft glow; the header, the side menu and the cards are slightly translucent and
+   frosted, so the glow shows through at the edges. Surfaces stay mostly opaque, so text contrast does not depend on what is behind them. */
+:root { --page-glow: radial-gradient(900px 520px at 88% -8%, rgba(56, 189, 248, .11), transparent 62%), radial-gradient(760px 460px at -6% 108%, rgba(37, 99, 235, .13), transparent 62%); }
+:root[data-theme="light"] { --page-glow: radial-gradient(900px 520px at 88% -8%, rgba(56, 189, 248, .16), transparent 62%), radial-gradient(760px 460px at -6% 108%, rgba(59, 130, 246, .10), transparent 62%); }
+.app { background: var(--page-glow), var(--page); }
+.layout, .main { background: transparent; }
+.tb-brand, .tb-search, .tb-indices .sbt, .tb-scan, .tb-market, .tb-auto, .tb-icon, .sb-nav {
+  background-color: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(12px) saturate(1.25); backdrop-filter: blur(12px) saturate(1.25);
+}
+.card, .panel, .dash-card, .stat-card { background-color: color-mix(in srgb, var(--surface) 92%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+
+/* Market open / closed in the header: the page code colours it with --green / --down, which are set once on :root and so ignored the shell's
+   own light-on-dark colours (dark green on a dark tile in light mode). Re-point them inside the shell, and make the label bigger and bolder. */
+.topbar, .sidebar { --green: var(--clr-green); --down: var(--clr-red); }
+.tb-market #mstatus-txt { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; }
+.tb-market .market-status-dot { width: 9px; height: 9px; }
+
+/* ═══ COLOUR SYSTEM v2: one role, one colour, in every page ═══
+   text: three levels · grid: tile + clear line · call chips: CE green, PE red, WAIT grey · market pill: open green, closed amber ·
+   option chain: green call side, red put side, blue at-the-money row · BUY green, SELL red. Everything below reads these tokens. */
+:root {
+  --tx: #eaf3ff; --tx-2: #b8cae6; --tx-3: #8ea6cc;
+  --surface-2: #132b55; --line: #22406f; --line-2: #2a4577;
+  --ce-bg: rgba(74, 222, 128, .18); --ce-bd: rgba(74, 222, 128, .55); --ce-tx: #86efac;
+  --pe-bg: rgba(248, 113, 113, .18); --pe-bd: rgba(248, 113, 113, .55); --pe-tx: #fca5a5;
+  --wt-bg: rgba(148, 163, 184, .18); --wt-bd: rgba(148, 163, 184, .45); --wt-tx: #cbd5e1;
+  --open-bg: rgba(74, 222, 128, .16); --open-bd: rgba(74, 222, 128, .55); --open-tx: #86efac; --open-dot: #4ade80;
+  --shut-bg: rgba(251, 191, 36, .16); --shut-bd: rgba(251, 191, 36, .55); --shut-tx: #fcd34d; --shut-dot: #fbbf24;
+  --ce-col: rgba(74, 222, 128, .08); --pe-col: rgba(248, 113, 113, .08); --atm-bg: rgba(56, 189, 248, .20);
+  --buy-bg: #22c55e; --buy-tx: #052e16; --sell-bg: #dc2626; --sell-tx: #ffffff;
+}
+:root[data-theme="light"] {
+  --tx: #0b1f3f; --tx-2: #3a5075; --tx-3: #5b7196;
+  --surface-2: #f5f9fe; --line: #d5e2f3; --line-2: #c9d8ee;
+  --ce-bg: #dcfce7; --ce-bd: #86efac; --ce-tx: #14532d;
+  --pe-bg: #fee2e2; --pe-bd: #fca5a5; --pe-tx: #7f1d1d;
+  --wt-bg: #e8eef7; --wt-bd: #c9d8ee; --wt-tx: #3a5075;
+  --ce-col: #f0fdf4; --pe-col: #fef2f2; --atm-bg: #dbeafe;
+  --buy-bg: #15803d; --buy-tx: #ffffff; --sell-bg: #b91c1c; --sell-tx: #ffffff;
+}
+/* inside the header and menu (always dark) the chips and the pill use the dark values */
+.topbar, .sidebar {
+  --ce-bg: rgba(74, 222, 128, .18); --ce-bd: rgba(74, 222, 128, .55); --ce-tx: #86efac;
+  --pe-bg: rgba(248, 113, 113, .18); --pe-bd: rgba(248, 113, 113, .55); --pe-tx: #fca5a5;
+  --wt-bg: rgba(148, 163, 184, .18); --wt-bd: rgba(148, 163, 184, .45); --wt-tx: #cbd5e1;
+  --tx: #ffffff; --tx-2: rgba(255, 255, 255, .80); --tx-3: rgba(255, 255, 255, .64);
+}
+
+.call-chip, .at-chip { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 6px; border: 1px solid transparent; }
+.call-ce, .at-chip.ok { background: var(--ce-bg); border-color: var(--ce-bd); color: var(--ce-tx); }
+.call-pe, .at-chip.bad { background: var(--pe-bg); border-color: var(--pe-bd); color: var(--pe-tx); }
+.call-wait, .at-chip.skip { background: var(--wt-bg); border-color: var(--wt-bd); color: var(--wt-tx); }
+.scan-auto.on, .s-su, .s-u { color: var(--ce-tx); }
+
+/* the market pill in the header */
+.tb-market { gap: 10px; }
+.tb-market #mpulse { background: var(--tx-3) !important; }
+.tb-market.open { background-image: linear-gradient(var(--open-bg), var(--open-bg)), var(--sheen); border-color: var(--open-bd); }   /* tint ON TOP of the frosted tile, never instead of it */
+.tb-market.open #mstatus-txt { color: var(--open-tx) !important; }
+.tb-market.open #mpulse { background: var(--open-dot) !important; box-shadow: 0 0 0 3px rgba(74, 222, 128, .22); }
+.tb-market.closed { background-image: linear-gradient(var(--shut-bg), var(--shut-bg)), var(--sheen); border-color: var(--shut-bd); }
+.tb-market.closed #mstatus-txt { color: var(--shut-tx) !important; }
+.tb-market.closed #mpulse { background: var(--shut-dot) !important; }
+.tb-market .sb-clock { color: var(--tx-2); }
+
+/* option chain: the call side is green, the put side is red, the at-the-money row is blue */
+.oc-table td:nth-child(1), .oc-table td:nth-child(2) { background: var(--ce-col); }
+.oc-table td:nth-child(4), .oc-table td:nth-child(5) { background: var(--pe-col); }
+.oc-table .strike { background: var(--surface-3); }
+.oc-table tr.atm td { background: var(--atm-bg); }
+.oc-table tr.atm .strike { background: var(--accent); color: var(--on-accent); }
+.oc-table .ltp.itm { background: rgba(var(--accent-rgb), .16); }
+.oc-table td { border-top-color: var(--line-2); }
+
+/* BUY / SELL */
+.btn-green { background: var(--buy-bg); background-image: none; color: var(--buy-tx); }
+.btn-green:hover:not(:disabled) { background: var(--buy-bg); filter: brightness(1.08); }
+.btn-short.active { background: var(--pe-bg); border-color: var(--pe-bd); color: var(--pe-tx); }
+.btn-long.active { background: var(--ce-bg); border-color: var(--ce-bd); color: var(--ce-tx); }
+.tb-name b { color: #7dd3fc; }
+.lv-btn-on, .lv-btn-send { background: var(--sell-bg); color: var(--sell-tx); }

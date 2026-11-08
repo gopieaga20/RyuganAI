@@ -48,14 +48,12 @@ export function tick() {
   const m = String(ist.getMinutes()).padStart(2, '0');
   const s = String(ist.getSeconds()).padStart(2, '0');
   DOM.setText('clock', `${h}:${m}:${s} IST`);
-  const open = ist.getHours() >= 9 && (ist.getHours() < 15 || (ist.getHours() === 15 && ist.getMinutes() <= 30));
-  const pulse = document.getElementById('mpulse');
+  const mins = ist.getHours() * 60 + ist.getMinutes();
+  const open = ist.getDay() >= 1 && ist.getDay() <= 5 && mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30;
   const statusEl = document.getElementById('mstatus-txt');
-  if (pulse) pulse.style.background = open ? 'var(--green)' : 'var(--down)';
-  if (statusEl) {
-    statusEl.textContent = open ? 'MARKET OPEN' : 'MARKET CLOSED';
-    statusEl.style.color = open ? 'var(--green)' : 'var(--down)';
-  }
+  const box = document.querySelector('.tb-market');
+  if (box) { box.classList.toggle('open', open); box.classList.toggle('closed', !open); }      // the colours come from CSS
+  if (statusEl) statusEl.textContent = open ? 'MARKET OPEN' : 'MARKET CLOSED';
 }
 setInterval(tick, 1000);
 tick();
