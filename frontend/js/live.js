@@ -27,7 +27,8 @@ async function refreshStatus() {
   try { status = await api('/api/live/status'); } catch (e) { DOM.setText('lv-sub', 'Could not reach the server: ' + e.message); return; }
   const on = status.enabled;
   $('lv-banner').className = 'lv-banner ' + (on ? 'on' : 'off');
-  DOM.setText('lv-title', on ? 'LIVE TRADING IS ON: orders go to your Angel One account' : 'LIVE TRADING IS OFF');
+  const bk = status.broker || { label: 'Angel One' };
+  DOM.setText('lv-title', on ? `LIVE TRADING IS ON: orders go to your ${bk.label} account${bk.account ? ' (' + bk.account + ')' : ''}` : 'LIVE TRADING IS OFF');
   DOM.setText('lv-sub', on ? 'Every order still needs a check and a final confirmation. It switches itself off if the server restarts.'
     : 'Real orders are blocked. Nothing here reaches your broker until you switch live mode on.');
   const t = $('lv-toggle'); t.textContent = on ? 'Switch live OFF' : 'Switch live ON'; t.className = 'btn ' + (on ? 'btn-ghost' : 'lv-btn-on');
@@ -73,6 +74,66 @@ async function saveLimits() {
     ['lv-lim-value', 'lv-lim-lots', 'lv-lim-loss'].forEach(id => delete $(id).dataset.dirty);
   } catch (e) { msg.style.color = 'var(--down)'; msg.textContent = 'Not saved: ' + e.message; }
   refreshStatus();
+}
+
+/* ───────────── broker: pick, Connect (the broker's own login page), disconnect ───────────── */
+let brokerList = null;
+
+let brokerSeq = 0;
+async function refreshBrokers() {
+  let d;
+  const seq = ++brokerSeq;
+  try { d = await api('/api/brokers'); } catch (e) { DOM.setText('lv-broker-msg', 'Could not load brokers: ' + e.message); return; }
+  if (seq !== brokerSeq) return;                                   // a newer refresh is already on its way: ignore this older answer
+  brokerList = d;
+  const pick = $('lv-broker-pick');
+  if (document.activeElement !== pick) pick.innerHTML = d.brokers.map(b => `<option value="${DOM.esc(b.id)}" ${b.id === d.active ? 'selected' : ''}>${DOM.esc(b.label)}</option>`).join('');
+  const a = d.brokers.find(b => b.id === d.active) || d.brokers[0];
+  const chip = $('lv-broker-chip');
+  chip.textContent = !a.configured ? 'Not set up' : a.connected ? 'Connected' : a.login === 'oauth' ? 'Not connected' : 'Logs in automatically';
+  chip.className = 'at-chip ' + (a.connected ? 'ok' : (!a.configured || a.login === 'oauth') ? 'bad' : 'skip');
+  DOM.setText('lv-broker-acct', a.account ? `Account ${a.account}` + (a.expires ? ` · valid until ${new Date(a.expires * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, dateStyle: 'medium', timeStyle: 'short' })} IST` : '') : '');
+  if (!$('lv-broker-msg').dataset.sticky) DOM.setText('lv-broker-msg', a.message || '');
+  const oauth = a.login === 'oauth';
+  $('lv-broker-connect').style.display = oauth ? '' : 'none';
+  $('lv-broker-connect').textContent = a.connected ? 'Reconnect' : 'Connect';
+  $('lv-broker-disconnect').style.display = oauth && a.connected ? '' : 'none';
+}
+
+function brokerMsg(text, sticky = true) {
+  const el = $('lv-broker-msg'); el.textContent = text; if (sticky) el.dataset.sticky = '1'; else delete el.dataset.sticky;
+}
+
+async function pickBroker() {
+  try { await api('/api/brokers/active', { id: $('lv-broker-pick').value }); brokerMsg('Broker changed.', false); }
+  catch (e) { brokerMsg(e.message); }
+  await refreshBrokers(); refreshAll();
+}
+
+async function connectBroker() {
+  const id = brokerList?.active; if (!id) return;
+  try {
+    const { url } = await api(`/api/brokers/${id}/login`);
+    brokerMsg('Opening the broker login page…', false);
+    window.location.assign(url);                    // this tab goes to the broker's own sign-in page; the broker sends you back here afterwards
+  } catch (e) { brokerMsg(e.message); }
+}
+
+/** Back from the broker's login page: the address carries #/live?broker=..&status=connected|error. Show the result, then tidy the address. */
+function handleBrokerReturn() {
+  const h = location.hash || '';
+  const q = h.includes('?') ? new URLSearchParams(h.split('?')[1]) : null;
+  if (!q || !q.get('broker') || !q.get('status')) return;
+  if (q.get('status') === 'connected') brokerMsg('Connected. You can now switch live trading on.', true);
+  else brokerMsg(q.get('msg') || 'The broker login did not finish. Press Connect to try again.', true);
+  try { history.replaceState(null, '', '#/live'); } catch { }
+  setTimeout(() => { delete $('lv-broker-msg').dataset.sticky; }, 15000);
+}
+
+async function disconnectBroker() {
+  if (!confirm('Disconnect from the broker? You will need to sign in again to trade live.')) return;
+  try { await api(`/api/brokers/${brokerList.active}/disconnect`, {}); brokerMsg('Disconnected.', false); } catch (e) { brokerMsg(e.message); }
+  refreshBrokers(); refreshStatus();
 }
 
 /* ───────────── order form ───────────── */
@@ -265,11 +326,14 @@ async function saveExitDefaults() {
   catch (e) { alert(e.message); }
 }
 
-export function refreshAll() { return Promise.all([refreshStatus(), refreshTables(), refreshExits()]); }
+export function refreshAll() { return Promise.all([refreshStatus(), refreshBrokers(), refreshTables(), refreshExits()]); }
 
 export function initLive() {
   if (!$('tab-live')) return;
   $('lv-toggle').addEventListener('click', toggleLive);
+  $('lv-broker-pick').addEventListener('change', pickBroker);
+  $('lv-broker-connect').addEventListener('click', connectBroker);
+  $('lv-broker-disconnect').addEventListener('click', disconnectBroker);
   $('lv-kill').addEventListener('click', kill);
   $('lv-lim-save').addEventListener('click', saveLimits);
   ['lv-lim-value', 'lv-lim-lots', 'lv-lim-loss'].forEach(id => $(id).addEventListener('input', () => { $(id).dataset.dirty = '1'; }));
@@ -298,6 +362,7 @@ export function initLive() {
   ['lv-sl', 'lv-tp', 'lv-trail'].forEach(id => $(id).addEventListener('input', clearPreview));
   $('lv-orders').addEventListener('click', e => { const b = e.target.closest('[data-cancel]'); if (b) cancelOrder(b.dataset.cancel, b.dataset.variety); });
   onTypeChange();
+  handleBrokerReturn();
   setSide('BUY');
   refreshStatus();                                          // for the top-bar LIVE pill
   if (!timer) timer = setInterval(() => { if (!document.hidden) { if ($('tab-live').classList.contains('active')) refreshAll(); else refreshStatus(); } }, 6000);

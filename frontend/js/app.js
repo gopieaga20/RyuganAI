@@ -7,6 +7,8 @@ import { fetchLiveTickers, fetchGlobalCues, debounceSearch } from './market-data
 import { refreshNiftySignal, generateSignal, qs, generateMorningBrief, analyzeFO, loadSectors } from './signals.js';
 import { askA, sendChat } from './chat.js';
 import { PAGES, parseRoute, hashFor, titleFor } from './route.js';
+import { initTiles } from './tiles.js';
+import { initTilt } from './tilt.js';
 import {
   toggleStrat, btFetchData, runBacktest, btReset, filterTrades,
   initReplay, rStep, togglePlay, getAIReview, askAIQa,
@@ -109,6 +111,7 @@ window.addEventListener('load', async () => {
   initDash();
   initAutoTrade();
   initLive();
+  initTiles(); initTilt();
   // open the page named in the address (a refresh or a pasted link); an unknown or empty address means the Dashboard
   const first = parseRoute(location.hash);
   try { history.replaceState(null, '', hashFor(first)); } catch { }
@@ -128,7 +131,7 @@ window.addEventListener('load', async () => {
   loadBacktestHistory();
   loadLotSizes().then(applyBtLotSize); // current lot sizes from the exchange list, not hardcoded
 
-  DOM.setText('nticker', 'Welcome to Ryugan AI — loading live Nifty 50 signal...');
+  DOM.setText('nticker', 'Welcome to R-Yugan AI — loading live Nifty 50 signal...');
 });
 
 /* ═══════════════════════════════════════════

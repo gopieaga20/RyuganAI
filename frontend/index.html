@@ -7,7 +7,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>Ryugan Pro — Investment Trading Platform</title>
+  <title>R-Yugan Pro — Investment Trading Platform</title>
   <link rel="icon" type="image/svg+xml" href="assets/logo-mark.svg" />
   <link
     href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap"
@@ -24,7 +24,7 @@
   <div class="ov" id="ov">
     <div class="ov-inner">
       <img class="ov-logo" src="assets/logo-mark.svg" alt="" />
-      <div class="ov-brand">RYUGAN <b>PRO</b></div>
+      <div class="ov-brand">R-YUGAN <b>PRO</b></div>
       <div class="ov-tag">INVESTMENT TRADING PLATFORM</div>
       <div class="ov-spin"></div>
       <p id="ovMsg">LOADING...</p>
@@ -47,8 +47,8 @@
   <!-- ═══════════ TOP BAR ═══════════ -->
   <header class="topbar">
     <div class="tb-brand">
-      <img class="logo-img" src="assets/logo-mark.svg" alt="Ryugan Pro" />
-      <div class="tb-name">RYUGAN<b>PRO</b></div>
+      <img class="logo-img" src="assets/logo-shell.svg" alt="R-Yugan Pro" />
+      <div class="tb-name">R-YUGAN<b>PRO</b></div>
     </div>
     <div class="tb-search">
       <span class="tb-search-ic">⌕</span>
@@ -971,6 +971,18 @@
           </div>
         </div>
 
+        <div class="card mb12 lv-broker" id="lv-broker">
+          <div class="card-title">Broker <span class="muted small">(live orders go to the broker you select and connect; you sign in on the broker's own page)</span></div>
+          <div class="lv-broker-row">
+            <label>Broker <select id="lv-broker-pick"></select></label>
+            <span class="at-chip skip" id="lv-broker-chip">--</span>
+            <span class="muted small" id="lv-broker-acct"></span>
+            <button class="btn btn-primary btn-sm" id="lv-broker-connect">Connect</button>
+            <button class="btn btn-ghost btn-sm" id="lv-broker-disconnect">Disconnect</button>
+          </div>
+          <div class="small" id="lv-broker-msg"></div>
+        </div>
+
         <div class="lv-grid">
           <div class="card">
             <div class="card-title">Account &amp; limits</div>
@@ -1247,7 +1259,7 @@
             </div>
             <div class="at-set-sub">Per stock <span class="muted small">(stop-loss and target are % of the option premium paid; a stock left at the defaults follows them)</span></div>
             <div class="tbl-wrap">
-              <table class="dtbl as-table">
+              <table class="dtbl as-table keep-table">
                 <thead><tr><th>Trade</th><th>Stock</th><th>Stop-loss %</th><th>Target %</th><th>Lots</th><th>Orders a day</th><th>Product</th><th>Quantity</th><th></th></tr></thead>
                 <tbody id="as-rows"></tbody>
               </table>

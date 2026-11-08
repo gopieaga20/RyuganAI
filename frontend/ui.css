@@ -349,22 +349,38 @@ input::placeholder, textarea::placeholder { color: var(--tx-3); }
 .rp-note { font-size: 11px; color: var(--amber); background: var(--clr-amber-muted); border-radius: 6px; padding: 6px 10px; margin-bottom: 10px; }
 .rp-bar select { width: 64px; flex: none; }
 
-/* ═══ BRAND PALETTE: Midnight Navy + Cyan (overrides the base tokens above, dark and light) ═══ */
-/* Midnight Navy + Cyan */
+/* ═══ BRAND PALETTE: white + midnight cyan (#0A2A33) ═══
+   Dark:  midnight cyan is the primary (backgrounds and cards), white is the secondary (text, primary buttons).
+   Light: white is the primary (cards), midnight cyan is the secondary (text, primary buttons).
+   --accent (bright cyan, deeper in light mode) is only the small highlight: focus rings, links, the active nav item. Green and red stay up and down. */
 :root {
-  --bg: #070b14; --surface: #0d1423; --surface-2: #121b2e; --surface-3: #19243b;
-  --line: #1b2740; --line-2: #2a3a5a; --tx: #e5ecf8; --tx-2: #a0b0cc; --tx-3: #6a7c9c;
-  --accent: #22d3ee; --accent-rgb: 34, 211, 238; --on-accent: #021318;
-  --chart-bg: #070b14; --chart-grid: rgba(120, 170, 255, .06);
-  --clr-blue-dk: #67e2f5; --clr-border-3: #3d5280;
+  --bg: #061c23; --surface: #0a2a33; --surface-2: #0f3541; --surface-3: #14424f;
+  --line: rgba(255, 255, 255, .10); --line-2: rgba(255, 255, 255, .18);
+  --tx: #ffffff; --tx-2: rgba(255, 255, 255, .74); --tx-3: rgba(255, 255, 255, .58);
+  --accent: #22d3ee; --accent-rgb: 34, 211, 238; --on-accent: #04202a;
+  --brand: #ffffff; --on-brand: #0a2a33; --brand-hover: #dff3f7;
+  --down: #ff7a7a; --up: #3ddc97;
+  --chart-bg: #0a2a33; --chart-text: rgba(255, 255, 255, .62); --chart-grid: rgba(255, 255, 255, .06);
+  --clr-blue-dk: #67e2f5; --clr-border-3: rgba(255, 255, 255, .28);
+  --tile-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset;
 }
 :root[data-theme="light"] {
-  --bg: #eef3fa; --surface: #ffffff; --surface-2: #f5f8fd; --surface-3: #e4ecf7;
-  --line: #dae4f2; --line-2: #c3d3ea; --tx: #0f1b2e; --tx-2: #44566f; --tx-3: #75869f;
-  --accent: #0891b2; --accent-rgb: 8, 145, 178; --on-accent: #ffffff;
-  --chart-bg: #ffffff; --chart-grid: rgba(15, 40, 80, .07);
-  --clr-blue-dk: #0b6f89; --clr-border-3: #9db3d0;
+  --bg: #f2f8fa; --surface: #ffffff; --surface-2: #f6fafb; --surface-3: #e6f1f4;
+  --line: #dce9ed; --line-2: #c2d6dc;
+  --tx: #0a2a33; --tx-2: #35525b; --tx-3: #4f6d77;
+  --accent: #0e7490; --accent-rgb: 14, 116, 144; --on-accent: #ffffff;
+  --brand: #0a2a33; --on-brand: #ffffff; --brand-hover: #14424f;
+  --down: #c62828; --up: #0b7a57; --amber: #9a6700;
+  --chart-bg: #ffffff; --chart-text: #4f6d77; --chart-grid: rgba(10, 42, 51, .07);
+  --clr-blue-dk: #0a566b; --clr-border-3: #9fbac2;
+  --tile-shadow: 0 1px 2px rgba(10, 42, 51, .06);
 }
+/* primary / secondary buttons carry the white-vs-midnight swap */
+.btn-primary, .btn-primary:disabled { background: var(--brand); color: var(--on-brand); }
+.btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
+.btn-ghost { color: var(--tx); border-color: var(--line-2); }
+.btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* logo */
 .logo-img { height: 34px; width: auto; display: block; }
@@ -603,7 +619,7 @@ body.chart-full-open { overflow: hidden; }
 .lv-exit-set{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding:10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface-2)}
 .lv-exit-set label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--tx-3)}
 .lv-exit-set input{width:90px;height:30px;padding:0 8px;border-radius:6px;border:1px solid var(--line-2)}
-.linkbtn{background:none;border:0;color:var(--cyan,#22d3ee);cursor:pointer;text-decoration:underline;font-size:11px;padding:0}
+.linkbtn{background:none;border:0;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:11px;padding:0}
 .nf-box{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .nf-check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--tx-2)}
 .nf-check input[type=checkbox]{width:auto;height:auto}
@@ -611,3 +627,224 @@ body.chart-full-open { overflow: hidden; }
 .nf-sub{margin-left:22px}
 .as-table select{width:auto;height:28px;padding:0 6px;font-size:12px}
 .as-table .as-day{width:64px}
+.lv-broker-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+.lv-broker-row label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--tx-3)}
+.lv-broker-row select{width:auto;height:32px;padding:0 28px 0 10px}
+#lv-broker-msg{margin-top:8px;color:var(--tx-2);min-height:16px}
+
+/* ═══ TILES: every data-table row is a tile ═══
+   js/tiles.js stamps data-label on each cell (its column name) and data-tone on rows in profit or loss. The per-stock settings
+   table (.keep-table, editable inputs) and the option chain (.oc-table) stay real tables. */
+table.dtbl:not(.keep-table), table.scan-table { display: block; width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+table.dtbl:not(.keep-table) thead, table.scan-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+table.dtbl:not(.keep-table) tbody, table.scan-table tbody { display: flex; flex-direction: column; gap: 8px; }
+table.dtbl:not(.keep-table) tbody tr, table.scan-table tbody tr {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 10px 14px;
+  background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: 12px;
+  box-shadow: var(--tile-shadow); transition: transform .15s, border-color .15s, background .15s;
+}
+table.dtbl:not(.keep-table) tbody tr:hover, table.scan-table tbody tr:hover { background: var(--surface-3); border-color: var(--line-2); --lift: -2px; box-shadow: var(--depth-2); }
+table.dtbl:not(.keep-table) tbody tr[data-tone="up"], table.scan-table tbody tr[data-tone="up"] { border-left-color: var(--up); }
+table.dtbl:not(.keep-table) tbody tr[data-tone="down"], table.scan-table tbody tr[data-tone="down"] { border-left-color: var(--down); }
+table.dtbl:not(.keep-table) tbody tr:hover td, table.scan-table tbody tr:hover td { background: none; }
+table.dtbl:not(.keep-table) td, table.scan-table td {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0; border: 0; background: none; vertical-align: baseline;
+}
+table.dtbl:not(.keep-table) td[data-label]:not([data-label=""])::before, table.scan-table td[data-label]:not([data-label=""])::before {
+  content: attr(data-label); font-size: 9.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--tx-3); white-space: nowrap;
+}
+/* the first cell is the tile's title; the last (buttons) sits on the right */
+table.dtbl:not(.keep-table) td:first-child, table.scan-table td:first-child { flex: 1 1 150px; font-weight: 700; font-size: 13px; padding-left: 0; }
+table.dtbl:not(.keep-table) td:first-child::before, table.scan-table td:first-child::before { font-weight: 600; }
+table.dtbl:not(.keep-table) td:last-child:not(:first-child):has(button), table.scan-table td:last-child:not(:first-child):has(button) { margin-left: auto; flex-direction: row; align-items: center; gap: 6px; }
+/* a "no data" row is a single centred tile */
+table.dtbl:not(.keep-table) tbody tr:has(> td.empty-cell), table.scan-table tbody tr:has(> td.empty-cell) { justify-content: center; border-left-color: var(--line); background: transparent; border-style: dashed; }
+table.dtbl:not(.keep-table) td.empty-cell { align-items: center; text-align: center; padding: 14px !important; flex: 1 1 0; white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+table.dtbl:not(.keep-table) tbody tr:has(> td.empty-cell) { min-width: 0; }
+table.dtbl:not(.keep-table) td.empty-cell::before { display: none; }
+/* rows of the wide tables use a grid, so the same column sits at the same place in every tile */
+table.dtbl:not(.keep-table) tbody tr { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px 16px; align-items: center; }
+table.dtbl:not(.keep-table) td { text-align: left; align-items: flex-start; }
+table.dtbl:not(.keep-table) td:first-child { grid-column: span 2; flex: none; }
+table.dtbl:not(.keep-table) td[data-wide="1"] { grid-column: span 2; }
+table.dtbl:not(.keep-table) td { overflow-wrap: anywhere; }
+table.dtbl:not(.keep-table) td:last-child:not(:first-child):has(button) { margin-left: 0; justify-content: flex-end; align-self: center; }
+table.dtbl:not(.keep-table) tbody tr:has(> td.empty-cell) { display: flex; }
+/* the dashboard scanner is narrow: a compact two-line tile */
+table.scan-table tbody tr { padding: 8px 12px; gap: 4px 14px; cursor: pointer; }
+table.scan-table td:first-child { flex: 1 1 100%; max-width: none; padding-left: 0; }
+table.scan-table .sym { max-width: none; }
+table.scan-table tbody tr.active, table.scan-table tbody tr.scan-row.active { border-color: var(--accent); background: var(--surface-3); }
+.tbl-wrap { overflow-x: visible; }
+@media (max-width: 700px) {
+  table.dtbl:not(.keep-table) tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  table.dtbl:not(.keep-table) td:first-child, table.dtbl:not(.keep-table) td:last-child:not(:first-child):has(button), table.dtbl:not(.keep-table) td.empty-cell { grid-column: 1 / -1; }
+  table.dtbl:not(.keep-table) td:last-child:not(:first-child):has(button) { margin-left: 0; justify-content: flex-end; }
+}
+@media (prefers-reduced-motion: reduce) { table.dtbl tbody tr, table.scan-table tbody tr { transition: none; } table.dtbl tbody tr:hover, table.scan-table tbody tr:hover { transform: none; } }
+
+/* ═══ SUBTLE 3D: layered depth ═══
+   Surfaces sit on three layers (page, card, tile). Light comes from above: a thin highlight on each top edge and a soft
+   shadow beneath. Tiles and stat cards lift on hover and lean a couple of degrees toward the mouse (js/tilt.js).
+   Nothing here changes a number, a colour meaning or a layout. */
+:root {
+  --depth-1: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 6px 16px -6px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .30);
+  --depth-2: 0 1px 0 rgba(255, 255, 255, .09) inset, 0 14px 26px -10px rgba(0, 0, 0, .65), 0 3px 8px rgba(0, 0, 0, .30);
+  --depth-btn: 0 1px 0 rgba(255, 255, 255, .55) inset, 0 -2px 0 rgba(10, 42, 51, .18) inset, 0 4px 10px -3px rgba(0, 0, 0, .5);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(255, 255, 255, 0) 42%);
+}
+:root[data-theme="light"] {
+  --depth-1: 0 1px 0 #ffffff inset, 0 6px 16px -8px rgba(10, 42, 51, .22), 0 1px 3px rgba(10, 42, 51, .08);
+  --depth-2: 0 1px 0 #ffffff inset, 0 14px 26px -12px rgba(10, 42, 51, .30), 0 3px 8px rgba(10, 42, 51, .10);
+  --depth-btn: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 -2px 0 rgba(0, 0, 0, .28) inset, 0 4px 10px -3px rgba(10, 42, 51, .45);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, .9), rgba(255, 255, 255, 0) 45%);
+}
+.card, .panel, .dash-card, .dash-chart, .stat-card { box-shadow: var(--depth-1); background-image: var(--sheen); }
+.stat-card { transition: transform .15s, box-shadow .15s; }
+.stat-card, table.dtbl:not(.keep-table) tbody tr, table.scan-table tbody tr {
+  transform: perspective(900px) translateY(var(--lift, 0)) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  will-change: transform;
+}
+.stat-card:hover { --lift: -2px; box-shadow: var(--depth-2); }
+table.dtbl:not(.keep-table) tbody tr, table.scan-table tbody tr { box-shadow: var(--depth-1); background-image: var(--sheen); }
+/* buttons feel pressable */
+.btn-primary { box-shadow: var(--depth-btn); transition: transform .12s, box-shadow .12s, background .15s; }
+.btn-primary:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 0 rgba(255, 255, 255, .3) inset, 0 1px 3px rgba(0, 0, 0, .4); }
+.modal, .lv-modal { box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .7), 0 8px 20px rgba(0, 0, 0, .35); }
+/* no motion when the user asks for none; no tilt on touch (the script also skips them) */
+@media (prefers-reduced-motion: reduce) {
+  .stat-card, table.dtbl tbody tr, table.scan-table tbody tr { transform: none !important; will-change: auto; }
+}
+@media (max-width: 700px) {
+  .stat-card, table.dtbl:not(.keep-table) tbody tr, table.scan-table tbody tr { will-change: auto; }
+}
+
+/* ═══ SHELL v2 (desktop): icon-only side menu and header, every item a separate rounded tile ═══
+   Names show as a tooltip on hover or keyboard focus. The phone keeps its bottom tab bar (there is no hover on a phone). */
+@media (min-width: 701px) {
+  :root { --top-h: 68px; --rail-w: 76px; }
+  .app { background: var(--bg); }
+
+  /* header */
+  .topbar { background: transparent; border-bottom: 0; padding: 10px 16px 8px 12px; gap: 10px; align-items: stretch; }
+  .tb-brand, .tb-search, .tb-indices .sbt, .tb-scan, .tb-market, .tb-auto, .tb-icon, .tb-live {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--depth-1); background-image: var(--sheen);
+  }
+  .tb-brand { min-width: 0; padding: 0 16px 0 10px; align-items: center; }
+  .tb-name { font-size: 13px; }
+  .tb-search { width: 300px; height: auto; padding: 0 8px 0 14px; }
+  .tb-search input { height: 100%; }
+  .tb-btn { border-radius: 9px; }
+  .tb-indices { gap: 10px; overflow: visible; }
+  .tb-indices .sbt { padding: 5px 14px; align-content: center; transition: transform .15s, border-color .15s, box-shadow .15s; }
+  .tb-indices .sbt:hover { background: var(--surface-2); border-color: var(--line-2); transform: translateY(-1px); box-shadow: var(--depth-2); }
+  .tb-right { gap: 10px; align-items: stretch; }
+  .tb-scan, .tb-market, .tb-auto { padding: 0 14px; display: flex; align-items: center; border-radius: 14px; }
+  .tb-icon { width: 48px; height: auto; border-radius: 14px; font-size: 18px; color: var(--tx); transition: transform .15s, border-color .15s; }
+  .tb-icon:hover { transform: translateY(-1px); }
+  .tb-live { display: flex; align-items: center; padding: 0 14px; border: 0; border-radius: 14px; }
+
+  /* side menu */
+  .layout { background: var(--bg); }
+  .sidebar, .sidebar:hover { width: var(--rail-w); min-width: var(--rail-w); background: transparent; border-right: 0; box-shadow: none; padding: 0 0 0 12px; overflow: visible; transition: none; z-index: 30; }
+  .sb-nav { padding: 4px 0 12px; gap: 10px; align-items: flex-start; }
+  .nav-btn, .nav-btn-special, .nav-btn-live {
+    position: relative; overflow: visible; width: 48px; height: 48px; padding: 0; margin: 0; justify-content: center; gap: 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--depth-1); background-image: var(--sheen);
+    color: var(--tx-2); transition: transform .15s, border-color .15s, box-shadow .15s, color .15s, background .15s;
+  }
+  .nav-btn:hover { background: var(--surface-2); color: var(--tx); border-color: var(--line-2); transform: translateY(-1px); box-shadow: var(--depth-2); }
+  .nav-btn.active { background: var(--surface-3); color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset, var(--depth-1); }
+  .nav-btn-live { color: var(--live, #ff4d4f); }
+  .nav-btn-live.active { color: var(--live, #ff4d4f); border-color: var(--live, #ff4d4f); box-shadow: 0 0 0 1px var(--live, #ff4d4f) inset, var(--depth-1); background: var(--surface-3); }
+  .nav-btn-special { margin-top: 6px; }
+  .nav-btn .nav-icon { width: 22px; height: 22px; display: grid; place-items: center; }
+  .nav-btn .nav-icon svg { width: 22px; height: 22px; }
+  /* the name: a tooltip tile to the right of the icon, on hover or keyboard focus only */
+  .nav-btn .nav-label, .sidebar:hover .nav-btn .nav-label {
+    position: absolute; left: calc(100% + 12px); top: 50%; transform: translate(-6px, -50%); opacity: 0; pointer-events: none; white-space: nowrap;
+    padding: 7px 12px; border-radius: 10px; background: var(--surface-3); color: var(--tx); border: 1px solid var(--line-2);
+    box-shadow: var(--depth-2); font-size: 12px; font-weight: 600; letter-spacing: .02em; transition: opacity .12s, transform .12s; z-index: 40;
+  }
+  .nav-btn:hover .nav-label, .sidebar:hover .nav-btn:hover .nav-label, .nav-btn:focus-visible .nav-label { opacity: 1; transform: translate(0, -50%); transition-delay: .25s; }
+}
+@media (min-width: 701px) and (max-width: 1500px) { .tb-search { width: 220px; } .tb-indices .sbt { padding: 5px 10px; } }
+@media (min-width: 701px) and (max-width: 1280px) { .tb-search { width: 170px; } .tb-scan { display: none; } .tb-indices .sbt-chg { display: none; } }
+@media (prefers-reduced-motion: reduce) { .nav-btn, .nav-btn .nav-label, .tb-indices .sbt, .tb-icon { transition: none !important; } }
+
+/* ═══ SHELL v2.1 ═══ */
+/* one scroll only: the page frame can never be scrolled by focus or scroll-into-view (that was the second, hidden scroll in the side menu) */
+.layout { overflow: clip; }
+@media (min-width: 701px) {
+  /* header: the search box takes all the free space between the index tiles and the AUTO tile */
+  .tb-brand { order: 1; flex: none; }
+  .tb-indices { order: 2; flex: 0 1 auto; }
+  .tb-search { order: 3; flex: 1 1 200px; width: auto; min-width: 150px; }
+  .tb-right { order: 4; flex: none; }
+
+  /* side menu: ONE floating tile that holds every icon, with a gap below the header; it always fits the window height, so it never scrolls */
+  .sidebar, .sidebar:hover { padding: 6px 0 12px 12px; align-self: stretch; }
+  .sb-nav {
+    --item: clamp(32px, calc((100vh - var(--top-h) - 64px) / 11 - 4px), 44px);
+    width: 60px; padding: 8px 0; gap: 4px; align-items: center; margin-top: 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--depth-1); background-image: var(--sheen);
+  }
+  .nav-btn, .nav-btn-special, .nav-btn-live {
+    width: var(--item); height: var(--item); border: 0; background: transparent; background-image: none; box-shadow: none; border-radius: 14px;
+  }
+  .nav-btn:hover { background: var(--surface-3); box-shadow: none; transform: none; }
+  .nav-btn.active { background: var(--surface-3); box-shadow: 0 0 0 1.5px var(--accent) inset; }
+  .nav-btn-live.active { box-shadow: 0 0 0 1.5px var(--live, #ff4d4f) inset; }
+  .nav-btn-special { margin-top: 6px; }
+  .nav-btn-special::before { content: ''; position: absolute; top: -5px; left: 20%; right: 20%; height: 1px; background: var(--line-2); }
+  .nav-btn .nav-icon, .nav-btn .nav-icon svg { width: 20px; height: 20px; }
+  .nav-btn .nav-label, .sidebar:hover .nav-btn .nav-label { left: calc(100% + 16px); }
+}
+
+/* Auto-Scanner tile: line 1 = stock, price, change; line 2 = call and confidence */
+table.scan-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "sym price chg" "call call conf"; gap: 6px 12px; align-items: center; padding: 9px 12px; }
+table.scan-table td { flex-direction: row; align-items: center; gap: 8px; min-width: 0; }
+table.scan-table td::before { display: none !important; }
+table.scan-table td:nth-child(1) { grid-area: sym; flex: none; font-size: 13px; font-weight: 700; }
+table.scan-table td:nth-child(2) { grid-area: price; justify-content: flex-end; font-size: 12.5px; }
+table.scan-table td:nth-child(3) { grid-area: chg; justify-content: flex-end; font-size: 12px; min-width: 56px; }
+table.scan-table td:nth-child(4) { grid-area: call; flex-wrap: wrap; gap: 4px 8px; }
+table.scan-table td:nth-child(5) { grid-area: conf; justify-content: flex-end; }
+table.scan-table td[colspan] { grid-column: 2 / -1; grid-area: auto; }
+table.scan-table td .opt-line { font-size: 10.5px; color: var(--tx-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* contain absolutely positioned descendants (the visually hidden table headers of the tiles) so they scroll inside .main and never make the page itself scrollable */
+.app, .main { position: relative; }
+html, body { overflow: hidden; }
+
+/* ═══ MIDNIGHT SHELL ═══
+   The header and the side menu are midnight cyan with white text and icons in BOTH themes. The content area is a quiet white
+   (light) or deep teal (dark) behind the cards. The shell re-scopes the colour tokens to the midnight palette, so everything
+   inside it (search box, index tiles, buttons, tooltips) picks up the right colours without per-element rules. */
+:root { --page: #061c23; }
+:root[data-theme="light"] { --page: #f4f9fb; }
+html, body, .app, .layout, .main { background: var(--page); }
+.topbar, .sidebar {
+  --surface: #0a2a33; --surface-2: #0f3541; --surface-3: #14424f;
+  --line: rgba(255, 255, 255, .14); --line-2: rgba(255, 255, 255, .24);
+  --tx: #ffffff; --tx-2: rgba(255, 255, 255, .78); --tx-3: rgba(255, 255, 255, .62);
+  --accent: #22d3ee; --accent-rgb: 34, 211, 238; --clr-blue-lt: rgba(34, 211, 238, .16); --up: #3ddc97; --down: #ff7a7a; --clr-green: #3ddc97; --clr-red: #ff7a7a; --clr-text: #ffffff; --clr-text-2: rgba(255, 255, 255, .78); --clr-text-3: rgba(255, 255, 255, .62);
+  --depth-1: 0 1px 0 rgba(255, 255, 255, .06) inset, 0 6px 16px -6px rgba(0, 0, 0, .45), 0 1px 3px rgba(0, 0, 0, .25);
+  --depth-2: 0 1px 0 rgba(255, 255, 255, .09) inset, 0 14px 26px -10px rgba(0, 0, 0, .55), 0 3px 8px rgba(0, 0, 0, .25);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(255, 255, 255, 0) 42%);
+  color: var(--tx);
+}
+
+/* blocks that used to sit straight on the page background get a card surface, so their text keeps the card colours in both themes */
+.signal-hero, .se-controls, .quick-tags, .filter-bar { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px 16px; box-shadow: var(--depth-1); background-image: var(--sheen); }
+.quick-tags, .se-controls { margin-bottom: 12px; }
+
+/* softer shell in light mode: a mid teal instead of full midnight, so the header and menu stand out less against the white content */
+:root[data-theme="light"] .topbar, :root[data-theme="light"] .sidebar {
+  --surface: #2d5f6b; --surface-2: #386b78; --surface-3: #437784;
+  --line: rgba(255, 255, 255, .20); --line-2: rgba(255, 255, 255, .30);
+  --depth-1: 0 1px 0 rgba(255, 255, 255, .10) inset, 0 4px 12px -6px rgba(10, 42, 51, .35), 0 1px 2px rgba(10, 42, 51, .15);
+  --depth-2: 0 1px 0 rgba(255, 255, 255, .12) inset, 0 10px 20px -10px rgba(10, 42, 51, .40), 0 2px 6px rgba(10, 42, 51, .18);
+}
+:root[data-theme="light"] .topbar, :root[data-theme="light"] .sidebar { --up: #7ff0bd; --down: #ffa3a3; --clr-green: #7ff0bd; --clr-red: #ffa3a3; }
+:root[data-theme="light"] .nav-btn .nav-label, :root[data-theme="light"] .sidebar:hover .nav-btn .nav-label { background: #0a2a33; border-color: rgba(255, 255, 255, .2); }

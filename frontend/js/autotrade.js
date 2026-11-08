@@ -141,7 +141,7 @@ async function openSettings() {
   const show = panel.style.display === 'none';
   panel.style.display = show ? '' : 'none';
   $('at-settings-btn').textContent = show ? '⚙ Hide settings' : '⚙ Settings';
-  if (show && !settingsLoaded) {
+  if (show) {                                         // always read the saved settings: the stock list can also change from the dashboard
     try { applySettingsView(await api('/api/autotrade/settings')); settingsLoaded = true; }
     catch (e) { $('as-msg').textContent = 'Could not load settings: ' + e.message; }
   }

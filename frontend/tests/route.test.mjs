@@ -19,5 +19,5 @@ test('unknown, empty or odd addresses open the dashboard and never throw', () =>
 });
 
 test('every page has a title', () => {
-  for (const p of PAGES) assert.match(titleFor(p), /· Ryugan Pro$/);
+  for (const p of PAGES) assert.match(titleFor(p), /· R-Yugan Pro$/);
 });

@@ -16,4 +16,4 @@ export function parseRoute(hash) {
 }
 
 export const hashFor = page => '#/' + page;
-export const titleFor = page => `${TITLES[page] || 'Dashboard'} · Ryugan Pro`;
+export const titleFor = page => `${TITLES[page] || 'Dashboard'} · R-Yugan Pro`;

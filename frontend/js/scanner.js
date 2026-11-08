@@ -14,7 +14,7 @@ import { evaluate, combine } from './strategies.js';
 export const DEFAULT_UNIVERSE = ['NIFTY 50', 'BANK NIFTY', 'SENSEX', 'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS',
   'SBIN', 'TATASTEEL', 'AXISBANK', 'ITC', 'LT', 'BHARTIARTL', 'MARUTI'];
 
-const KEY = 'ryugan_scan_universe', SND = 'ryugan_scan_sound';
+const KEY = 'ryugan_scan_universe', SND = 'ryugan_scan_sound', SYNCED = 'ryugan_scan_synced';
 const SCAN_MS = 5 * 60 * 1000, SETTLE_MS = 8000, CONCURRENCY = 4;
 
 const store = {
@@ -35,8 +35,34 @@ export const Scanner = (() => {
     return (universe ||= [...DEFAULT_UNIVERSE]);
   }
   function setUniverse(list) { universe = [...new Set(list.map(s => s.trim().toUpperCase()).filter(Boolean))]; store.set(KEY, JSON.stringify(universe)); emit({ type: 'universe' }); }
-  const addSymbol = s => setUniverse([...getUniverse(), s]);
-  const removeSymbol = s => { setUniverse(getUniverse().filter(x => x !== s.toUpperCase())); results.delete(s.toUpperCase()); emit({ type: 'done' }); };
+  const addSymbol = s => { setUniverse([...getUniverse(), s]); pushToServer(); };
+  const removeSymbol = s => { setUniverse(getUniverse().filter(x => x !== s.toUpperCase())); results.delete(s.toUpperCase()); emit({ type: 'done' }); pushToServer(); };
+
+  /* The stock list is ONE list: the server's auto paper-trader scans the same stocks the dashboard shows. The server's copy is the
+     master; this browser keeps a copy so the table fills at once. Adding or removing here updates the server; the server's list
+     (which Paper > Settings also edits) is pulled back on start and before every scan. */
+  const apiBase = () => CONFIG.PROXY_BASE || '';
+  async function pushToServer() {
+    try {
+      const r = await fetch(apiBase() + '/api/autotrade/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ universe: getUniverse() }) });
+      if (r.ok) store.set(SYNCED, '1');
+    } catch { /* server unreachable: the local list is kept and pushed on the next change */ }
+  }
+  async function syncFromServer() {
+    try {
+      const r = await fetch(apiBase() + '/api/autotrade/settings', { cache: 'no-store' });
+      if (!r.ok) return;
+      const server = (await r.json())?.settings?.universe;
+      if (!Array.isArray(server) || !server.length) return;
+      const local = getUniverse();
+      // the first time this browser syncs, stocks added only here are kept (and sent to the server); after that the server wins
+      const merged = store.get(SYNCED) === '1' ? server : [...new Set([...server, ...local])];
+      const changed = merged.length !== local.length || merged.some((s, i) => s !== local[i]);
+      if (changed) setUniverse(merged);
+      if (merged.length !== server.length) await pushToServer(); else store.set(SYNCED, '1');
+      return changed;
+    } catch { /* offline: keep the local list */ }
+  }
 
   async function fetchCandles(sym, interval, range) {
     return toCandles(await yahooFetch(_toYahooSym(sym), interval, range));
@@ -82,8 +108,9 @@ export const Scanner = (() => {
     }
   }
 
+  let rerun = false;
   async function run(reason = 'manual') {
-    if (running) return;
+    if (running) { if (reason !== 'auto') rerun = true; return; }      // asked for during a scan (Add, Scan now, a list change): scan again right after
     running = true;
     const list = [...getUniverse()];
     emit({ type: 'start', total: list.length, reason });
@@ -102,6 +129,7 @@ export const Scanner = (() => {
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker));
     lastScan = Date.now(); running = false;
     emit({ type: 'done', lastScan });
+    if (rerun) { rerun = false; run('sync'); }                      // the stock list changed while this scan was running
   }
 
   function beep() {
@@ -118,6 +146,7 @@ export const Scanner = (() => {
     const now = Date.now();
     nextAt = Math.ceil(now / SCAN_MS) * SCAN_MS + SETTLE_MS;     // just after the next 5-minute candle closes
     timer = setTimeout(async () => {
+      await syncFromServer();
       if (isMarketOpen()) await run('auto');
       scheduleNext();
     }, nextAt - now);
@@ -128,10 +157,11 @@ export const Scanner = (() => {
     scheduleNext();
     tick = setInterval(() => emit({ type: 'tick', nextAt, open: isMarketOpen(), running }), 1000);
     run('startup');                                                // fill the table straight away, even off-hours
+    syncFromServer().then(changed => { if (changed) run('sync'); });   // then pick up the server's list (also edited in Paper > Settings)
   }
 
   return {
-    start, run, getUniverse, setUniverse, addSymbol, removeSymbol,
+    start, run, getUniverse, setUniverse, addSymbol, removeSymbol, syncFromServer,
     on(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     get results() { return results; },
     get lastScan() { return lastScan; },

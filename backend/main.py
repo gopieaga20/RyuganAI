@@ -49,9 +49,17 @@ from nse_client import get_fo_underlyings
 from db import ResilientPool
 import autotrader
 import live_broker
+from brokers import registry as brokers
 import live_rules
 import live_exits
 import notify
+
+brokers.load_defaults()
+
+
+def _broker():
+    """The broker live orders go to (chosen on the Live page, Angel One by default)."""
+    return brokers.active()
 import uuid
 
 load_dotenv()
@@ -78,6 +86,7 @@ async def lifespan(app: FastAPI):
         print("[OK] PostgreSQL connected and schema verified.")
     else:
         print("       Starting without DB: paper trading answers 503 until PostgreSQL is reachable, then reconnects by itself.")
+    await _restore_brokers(pool)
     watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
     auto_task = asyncio.create_task(_autotrade_loop(pool))
     exit_task = asyncio.create_task(_live_exit_loop(pool))
@@ -564,6 +573,17 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 message       TEXT NOT NULL DEFAULT ''
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS broker_sessions (
+                broker      TEXT PRIMARY KEY,
+                token       TEXT NOT NULL,
+                account     TEXT,
+                expires_ts  DOUBLE PRECISION NOT NULL,
+                updated     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("ALTER TABLE live_orders ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
+        await conn.execute("ALTER TABLE live_exits ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         # Safe migration: add new columns if they don't exist on old tables
         for stmt in [
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'MARKET'",
@@ -986,20 +1006,31 @@ async def _live_limits(pool) -> dict:
         return {}
 
 
+async def _live_ltp(broker, sym: str):
+    """Last price for a live order's check: Angel uses the app's normal price source; any other broker asks itself first and
+    falls back to that same source."""
+    if broker.id != "angel":
+        p = await asyncio.to_thread(broker.ltp, sym)
+        if p:
+            return p
+    return await _fetch_ltp(sym)
+
+
 async def _live_context(pool, o: dict) -> dict:
     sym = o["symbol"].upper()
-    info = _angel_broker._master_lookup.get(sym) if _angel_broker else None
+    broker = _broker()
+    info = broker.resolve(sym)
     found = bool(info and info.get("exch") == "NFO" and _OPTION_SYMBOL_RE.match(sym))
     und = autotrader.underlying_from_contract(sym)
     lot = (get_lot_sizes() or {}).get(und) if und else None
     problems = []
     try:
-        ltp = await _fetch_ltp(sym) if found else None
+        ltp = await _live_ltp(broker, sym) if found else None
     except Exception as e:
         ltp = None
         problems.append(f"Could not read the live price: {e}")
     try:
-        pos = await asyncio.to_thread(live_broker.positions)
+        pos = await asyncio.to_thread(broker.positions)
     except Exception as e:
         pos = []
         problems.append(f"Could not read your positions from the broker ({e}), so the order cannot be checked safely.")
@@ -1028,13 +1059,131 @@ async def _live_error_detail(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
+# ── brokers: pick one, Connect (the broker's own login page, like TradingView), switch ──
+_oauth_states: dict = {}          # state -> (broker id, expires): proves the redirect belongs to a login this server started
+_OAUTH_TTL = 600
+
+
+async def _save_broker_session(pool, b):
+    sess = b.session_for_storage()
+    async with pool.acquire() as conn:
+        if sess:
+            await conn.execute("INSERT INTO broker_sessions (broker, token, account, expires_ts) VALUES ($1, $2, $3, $4) "
+                               "ON CONFLICT (broker) DO UPDATE SET token = EXCLUDED.token, account = EXCLUDED.account, expires_ts = EXCLUDED.expires_ts, updated = NOW()",
+                               b.id, sess["token"], sess["account"], sess["expires_ts"])
+        else:
+            await conn.execute("DELETE FROM broker_sessions WHERE broker = $1", b.id)
+
+
+async def _restore_brokers(pool):
+    """After a restart: reload today's broker sessions and the broker chosen last time."""
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM broker_sessions WHERE expires_ts > $1", time.time())
+            chosen = await conn.fetchrow("SELECT value FROM app_settings WHERE key = 'live_broker'")
+        for r in rows:
+            b = brokers.get(r["broker"])
+            if b:
+                b.restore(r["token"], r["account"], float(r["expires_ts"]))
+        if chosen and brokers.get(chosen["value"]):
+            brokers.set_active(chosen["value"])
+    except Exception as e:
+        print(f"[WARN] could not restore broker sessions: {e}")
+
+
+class BrokerPick(BaseModel):
+    id: str = Field(..., min_length=2, max_length=20)
+
+
+@app.get("/api/brokers")
+async def brokers_list():
+    return {"active": brokers.active_id(), "brokers": [b.status() for b in brokers.all_brokers()]}
+
+
+@app.get("/api/brokers/{broker_id}/login")
+async def broker_login(broker_id: str):
+    b = brokers.get(broker_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Unknown broker.")
+    if not b.needs_connect:
+        raise HTTPException(status_code=400, detail=f"{b.label} signs in by itself with the credentials in the server .env.")
+    now = time.time()
+    for k in [k for k, v in _oauth_states.items() if v[1] < now]:
+        _oauth_states.pop(k, None)
+    state = uuid.uuid4().hex
+    _oauth_states[state] = (broker_id, now + _OAUTH_TTL)
+    try:
+        return {"url": b.login_url(state)}
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/brokers/{broker_id}/callback")
+async def broker_callback(broker_id: str, request: Request):
+    """Where the broker's login page sends the user back. Checks the `state` we issued, exchanges the one-time code for a token,
+    stores it, then redirects the browser straight back into the app (the Live page), which shows the result. The token is never
+    sent to the browser."""
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import urlencode
+    b = brokers.get(broker_id)
+    q = dict(request.query_params)
+    entry = _oauth_states.pop(q.get("state", ""), None)
+
+    def back(ok: bool, msg: str = ""):
+        qs = urlencode({"broker": broker_id, "status": "connected" if ok else "error", **({"msg": msg} if msg else {})})
+        return RedirectResponse(f"/#/live?{qs}", status_code=303)
+    if not b or not entry or entry[0] != broker_id or entry[1] < time.time():
+        return back(False, "This login link is not valid or has expired. Press Connect again.")
+    if q.get("error"):
+        return back(False, "The broker did not allow the login.")
+    try:
+        await asyncio.to_thread(b.complete_login, q)
+        await _save_broker_session(request.app.state.pool, b)
+    except Exception as e:
+        print(f"[WARN] {broker_id} login failed: {e}")
+        return back(False, "Could not finish the login: " + str(e)[:160])
+    return back(True)
+
+
+@app.post("/api/brokers/{broker_id}/disconnect")
+async def broker_disconnect(broker_id: str, request: Request):
+    b = brokers.get(broker_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Unknown broker.")
+    if _live_state["enabled"] and brokers.active_id() == broker_id:
+        raise HTTPException(status_code=400, detail="Switch live trading OFF before disconnecting the active broker.")
+    b.disconnect()
+    await _save_broker_session(request.app.state.pool, b)
+    return b.status()
+
+
+@app.post("/api/brokers/active")
+async def broker_set_active(req: BrokerPick, request: Request):
+    """Switch which broker live orders go to. Refused while live trading is ON or any stop/target rule is watching a position, so an
+    order or an exit can never go to a different account than the one the user was looking at."""
+    b = brokers.get(req.id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Unknown broker.")
+    if _live_state["enabled"]:
+        raise HTTPException(status_code=400, detail="Switch live trading OFF before changing broker.")
+    pool = _get_pool(request)
+    async with pool.acquire() as conn:
+        armed = await conn.fetchval("SELECT COUNT(*) FROM live_exits WHERE state IN ('WAITING', 'ARMED')")
+    if armed:
+        raise HTTPException(status_code=400, detail="A stop-loss/target rule is still watching a position. Remove it (or let it finish) before changing broker.")
+    brokers.set_active(req.id)
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO app_settings (key, value) VALUES ('live_broker', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", req.id)
+    return {"active": brokers.active_id(), "brokers": [x.status() for x in brokers.all_brokers()]}
+
+
 @app.get("/api/live/status")
 async def live_status(request: Request):
     pool = _get_pool(request)
     limits = await _live_limits(pool)
     funds = None
     try:
-        funds = await asyncio.to_thread(live_broker.funds)
+        funds = await asyncio.to_thread(_broker().funds)
     except Exception as e:
         funds = {"error": str(e)}
     async with pool.acquire() as conn:
@@ -1042,13 +1191,16 @@ async def live_status(request: Request):
                                            autotrader.now_ist().date())
     return {"enabled": _live_state["enabled"], "enabled_at": _live_state["enabled_at"], "limits": limits, "limits_ready": live_rules.limits_ready(limits),
             "market_open": live_rules.market_open(autotrader.now_ist()), "funds": funds, "orders_today": orders_today,
-            "phrase": _LIVE_PHRASE}
+            "phrase": _LIVE_PHRASE, "broker": _broker().status()}
 
 
 @app.post("/api/live/enable")
 async def live_enable(req: LiveEnable):
     if req.phrase.strip() != _LIVE_PHRASE:
         raise HTTPException(status_code=400, detail=f"Type exactly {_LIVE_PHRASE} to switch live trading on.")
+    b = _broker()
+    if b.needs_connect and not b.status()["connected"]:
+        raise HTTPException(status_code=400, detail=f"{b.label} is not connected. Press Connect on the Live page and sign in first.")
     _live_state.update(enabled=True, enabled_at=time.time())
     return {"enabled": True}
 
@@ -1106,13 +1258,14 @@ async def live_place(req: LiveConfirm, request: Request):
         check["errors"] = list(ctx["problems"]) + check["errors"]; check["ok"] = False
     if not check["ok"]:
         raise HTTPException(status_code=400, detail=" ".join(check["errors"]))
-    params = live_broker.build_params(o, ctx["info"]["token"], ctx["info"]["exch"], tag="RYUGAN" + req.preview_id[:6])
+    broker = _broker()
+    params = broker.build_params(o, ctx["info"], tag="RYUGAN" + req.preview_id[:6])
     async with pool.acquire() as conn:                     # written BEFORE sending: if anything goes wrong there is still a record
         await conn.execute(
-            """INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, price, trigger_price, state)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'SENDING')""",
-            req.preview_id, o["symbol"], o["side"], o["qty"], o["order_type"], o["product"], o.get("price") or None, o.get("trigger_price") or None)
-    result = await asyncio.to_thread(live_broker.place, params)
+            """INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, price, trigger_price, state, broker)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'SENDING', $9)""",
+            req.preview_id, o["symbol"], o["side"], o["qty"], o["order_type"], o["product"], o.get("price") or None, o.get("trigger_price") or None, broker.id)
+    result = await asyncio.to_thread(broker.place, params)
     async with pool.acquire() as conn:
         await conn.execute("UPDATE live_orders SET state = $1, broker_order_id = $2, message = $3 WHERE client_id = $4",
                            result["state"], result.get("order_id"), (result.get("message") or "")[:500], req.preview_id)
@@ -1132,7 +1285,7 @@ async def live_place(req: LiveConfirm, request: Request):
 async def live_orders(request: Request):
     pool = _get_pool(request)
     try:
-        book = await asyncio.to_thread(live_broker.order_book)
+        book = await asyncio.to_thread(_broker().order_book)
     except Exception as e:
         book = []
         print(f"[WARN] live order book failed: {e}")
@@ -1143,7 +1296,7 @@ async def live_orders(request: Request):
 
 @app.get("/api/live/positions")
 async def live_positions():
-    pos = await asyncio.to_thread(live_broker.positions)
+    pos = await asyncio.to_thread(_broker().positions)
     return {"positions": [p for p in pos if p["net_qty"] != 0 or (p["pnl"] or 0) != 0]}
 
 
@@ -1174,25 +1327,26 @@ async def _live_exit_create(pool, symbol: str, product: str, qty: int, rule: dic
     async with pool.acquire() as conn:
         await conn.execute("UPDATE live_exits SET state = 'CANCELLED', reason = 'replaced', updated = NOW() WHERE symbol = $1 AND product = $2 AND state IN ('WAITING', 'ARMED')",
                            symbol, product)
-        return await conn.fetchval("INSERT INTO live_exits (symbol, product, qty, sl_pct, tp_pct, trail_pct) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                                   symbol, product, qty, rule["sl_pct"], rule["tp_pct"], rule["trail_pct"])
+        return await conn.fetchval("INSERT INTO live_exits (symbol, product, qty, sl_pct, tp_pct, trail_pct, broker) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                                   symbol, product, qty, rule["sl_pct"], rule["tp_pct"], rule["trail_pct"], brokers.active_id())
 
 
 async def _live_send_exit(pool, r, qty: int, action: str, ltp: Optional[float] = None):
     """Sell `qty` at market to close a position because its stop / trailing stop / target was hit. Recorded before it is sent;
     an outcome that is unknown is never sent again."""
-    info = _angel_broker._master_lookup.get(r["symbol"]) if _angel_broker else None
+    broker = _broker()
+    info = broker.resolve(r["symbol"])
     if not info:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE live_exits SET state = 'EXIT_FAILED', message = $2, updated = NOW() WHERE id = $1", r["id"], "contract not in the scrip master")
         return
     o = {"symbol": r["symbol"], "side": "SELL", "qty": qty, "order_type": "MARKET", "product": r["product"], "price": 0, "trigger_price": 0}
     client_id = f"EXIT{r['id']}-{uuid.uuid4().hex[:8]}"
-    params = live_broker.build_params(o, info["token"], info["exch"], tag=f"RYEXIT{r['id']}"[:20])
+    params = broker.build_params(o, info, tag=f"RYEXIT{r['id']}"[:20])
     async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, state, message) VALUES ($1, $2, 'SELL', $3, 'MARKET', $4, 'SENDING', $5)",
-                           client_id, r["symbol"], qty, r["product"], f"auto exit: {action}")
-    result = await asyncio.to_thread(live_broker.place, params)
+        await conn.execute("INSERT INTO live_orders (client_id, symbol, side, qty, order_type, product, state, message, broker) VALUES ($1, $2, 'SELL', $3, 'MARKET', $4, 'SENDING', $5, $6)",
+                           client_id, r["symbol"], qty, r["product"], f"auto exit: {action}", broker.id)
+    result = await asyncio.to_thread(broker.place, params)
     st = result["state"]
     async with pool.acquire() as conn:
         await conn.execute("UPDATE live_orders SET state = $1, broker_order_id = $2, message = $3 WHERE client_id = $4",
@@ -1220,10 +1374,10 @@ async def _live_exit_tick(pool):
     if not _live_state["enabled"] or not live_rules.market_open(now):
         return
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM live_exits WHERE state IN ('WAITING', 'ARMED') ORDER BY id")
+        rows = await conn.fetch("SELECT * FROM live_exits WHERE state IN ('WAITING', 'ARMED') AND broker = $1 ORDER BY id", brokers.active_id())
     if not rows:
         return
-    pos = await asyncio.to_thread(live_broker.positions)
+    pos = await asyncio.to_thread(_broker().positions)
     for r in rows:
         mine = [p for p in pos if p["symbol"] == r["symbol"] and p["product"] == r["product"] and p["net_qty"] > 0]
         held = sum(p["net_qty"] for p in mine)
@@ -1303,7 +1457,7 @@ async def live_exits_set(req: LiveExitRule, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     sym = req.symbol.upper()
-    pos = await asyncio.to_thread(live_broker.positions)
+    pos = await asyncio.to_thread(_broker().positions)
     held = sum(p["net_qty"] for p in pos if p["symbol"] == sym and p["product"] == req.product and p["net_qty"] > 0)
     if held <= 0:
         raise HTTPException(status_code=400, detail="You do not hold this contract long with this product, so there is nothing to protect.")
@@ -1342,7 +1496,7 @@ class LiveCancel(BaseModel):
 @app.post("/api/live/cancel")
 async def live_cancel(req: LiveCancel):
     """Cancelling is always allowed, even with live mode off: it can only reduce risk."""
-    res = await asyncio.to_thread(live_broker.cancel, req.order_id, req.variety)
+    res = await asyncio.to_thread(_broker().cancel, req.order_id, req.variety)
     if not res["ok"]:
         raise HTTPException(status_code=400, detail=res.get("message") or "The broker did not cancel the order.")
     return res
@@ -1358,7 +1512,7 @@ async def live_exit_preview(req: LiveExit, request: Request):
     """Preview an order that closes a long position: a SELL limit order a little below the last price so it fills."""
     pool = _get_pool(request)
     sym = req.symbol.upper()
-    pos = await asyncio.to_thread(live_broker.positions)
+    pos = await asyncio.to_thread(_broker().positions)
     held = sum(p["net_qty"] for p in pos if p["symbol"] == sym and p["product"] == req.product and p["net_qty"] > 0)
     if held <= 0:
         raise HTTPException(status_code=400, detail="There is no long position to close for this contract and product.")
@@ -1380,9 +1534,9 @@ async def live_kill():
         print(f"[WARN] kill switch could not cancel the exit rules: {e}")
     cancelled, failed = [], []
     try:
-        for o in await asyncio.to_thread(live_broker.order_book):
+        for o in await asyncio.to_thread(_broker().order_book):
             if o["open"]:
-                r = await asyncio.to_thread(live_broker.cancel, o["order_id"], o["variety"])
+                r = await asyncio.to_thread(_broker().cancel, o["order_id"], o["variety"])
                 (cancelled if r["ok"] else failed).append(o["order_id"])
     except Exception as e:
         print(f"[WARN] kill switch could not read the order book: {e}")

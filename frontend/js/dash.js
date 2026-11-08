@@ -52,7 +52,7 @@ function renderScanTable() {
   rows.sort((a, b) => rank(a) - rank(b) || (b.confidence || 0) - (a.confidence || 0));
   body.innerHTML = rows.map(r => {
     const active = r.sym === sel.sym.toUpperCase() ? ' active' : '';
-    if (r.pending) return `<tr class="scan-row${active}" data-sym="${DOM.esc(r.sym)}"><td class="sym">${DOM.esc(r.sym)}</td><td colspan="3" class="muted">waiting for first scan…</td><td></td></tr>`;
+    if (r.pending) return `<tr class="scan-row${active}" data-sym="${DOM.esc(r.sym)}"><td class="sym">${DOM.esc(r.sym)}</td><td colspan="3" class="muted">waiting for first scan…</td><td><button class="x" data-rm="${DOM.esc(r.sym)}" title="Remove">×</button></td></tr>`;
     if (!r.ok) return `<tr class="scan-row${active}" data-sym="${DOM.esc(r.sym)}"><td class="sym">${DOM.esc(r.sym)}</td><td colspan="3" class="muted" title="${DOM.esc(r.error)}">no data</td><td><button class="x" data-rm="${DOM.esc(r.sym)}" title="Remove">×</button></td></tr>`;
     const chg = r.changePct;
     const opt = r.option && !r.option.error ? `<div class="opt-line">${DOM.esc(r.option.symbol)} @ ${fmt(r.option.ltp)}</div>` : '';

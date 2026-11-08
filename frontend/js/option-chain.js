@@ -148,7 +148,7 @@ function _renderOptionChain(data) {
 
   area.innerHTML = `
     <div style="overflow-x:auto;">
-    <table class="dtbl" style="min-width:640px;">
+    <table class="dtbl keep-table" style="min-width:640px;">
       <thead>
         <tr>
           <th colspan="4" style="text-align:center;color:var(--clr-green-dk);">CALLS</th>

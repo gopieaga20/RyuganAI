@@ -155,7 +155,7 @@ async def send_test() -> dict:
     """The Send test button: bypasses the on/off switches so the user can check the bot is set up."""
     if not configured():
         return {"ok": False, "detail": "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not set on the server."}
-    ok = await _sender("Ryugan test message: alerts are working.")
+    ok = await _sender("R-Yugan test message: alerts are working.")
     return {"ok": bool(ok), "detail": "Sent." if ok else "Telegram did not accept the message. Check the token and chat id, and that you pressed Start in the bot chat."}
 
 

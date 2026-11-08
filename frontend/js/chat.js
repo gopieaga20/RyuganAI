@@ -74,7 +74,7 @@ export function addMsg(role, htmlContent) {
   const area = document.getElementById('chat-area');
   const el = document.createElement('div');
   el.className = `chat-msg ${role}`;
-  const sender = role === 'user' ? 'YOU' : '◉ RYUGAN ANALYST · 20+ YRS';
+  const sender = role === 'user' ? 'YOU' : '◉ R-YUGAN ANALYST · 20+ YRS';
   el.innerHTML = `<div class="msg-sender">${DOM.esc(sender)}</div><div class="msg-bubble">${htmlContent}</div>`;
   area?.appendChild(el);
   if (area) area.scrollTop = 99999;
