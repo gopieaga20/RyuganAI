@@ -1237,6 +1237,9 @@
               <label>Default lots<input id="as-lots" type="number" min="1" max="100" step="1"></label>
               <label title="Nifty 50 can be traded several times a day, but only one position at a time: the next order waits until the previous one hits its target or stop">Nifty 50 orders a day<input id="as-nifty-day" type="number" min="1" max="50" step="1"></label>
               <label title="Every other stock: how many orders each may get per day">Other stocks: orders a day each<input id="as-stock-day" type="number" min="1" max="20" step="1"></label>
+              <label title="At most this many open auto positions may bet the same way (all calls or all puts). Stocks move together, so five calls are really one bet. 0 = no limit">Max open the same way<input id="as-samedir" type="number" min="0" max="5" step="1"></label>
+              <label title="After this many stop-losses today, no new auto trade is opened until tomorrow. 0 = no limit">Stop-losses a day, then pause<input id="as-stopsday" type="number" min="0" max="10" step="1"></label>
+              <label class="as-check" title="A stock call is taken only when the Nifty's own signal points the same way"><span>Stock must agree with Nifty</span><input id="as-niftyagree" type="checkbox"></label>
               <label title="Intraday positions are squared off at 15:15 IST. Carry-forward positions stay open until the stop or target is hit">Product
                 <select id="as-product"><option value="CARRYFORWARD">Carry-forward (NRML)</option><option value="INTRADAY">Intraday (MIS)</option></select></label>
             </div>

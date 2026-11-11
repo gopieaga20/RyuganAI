@@ -57,7 +57,7 @@ export async function refreshAutoTrade() {
   const custom = Object.keys(st.symbols || {}).length;
   DOM.setText('at-rules', `Buys the ATM option when confidence ≥ ${st.min_confidence}% · max ${st.max_trades_per_day} new trades a day · max ${st.max_positions} open · one per stock · ` +
     `default stop −${pct(st.sl_pct)}% / target +${pct(st.tp_pct)}% of the premium · Nifty ${st.nifty_qty} units · ${custom ? `${custom} stock${custom > 1 ? 's' : ''} with their own settings · ` : ''}` +
-    `entries 09:30–14:30 IST · no end-of-day square-off (a trade stays open until its stop or target is hit)`);
+    `${st.max_same_direction ? `max ${st.max_same_direction} open the same way · ` : ''}${st.max_stops_per_day ? `pause after ${st.max_stops_per_day} stops a day · ` : ''}${st.nifty_agree ? 'stocks must agree with the Nifty · ' : ''}entries 10:15–14:30 IST`);
   DOM.setText('at-today', `${s.orders_today} / ${st.max_trades_per_day}`);
   lastOrders = s.orders || [];
   renderScan(s.last_scan);
@@ -131,6 +131,7 @@ function applySettingsView(d) {
   const s = d.settings;
   $('as-conf').value = s.min_confidence; $('as-maxpos').value = s.max_positions; $('as-maxday').value = s.max_trades_per_day;
   $('as-sl').value = pct(s.sl_pct); $('as-tp').value = pct(s.tp_pct); $('as-lots').value = s.lots;
+  $('as-samedir').value = s.max_same_direction; $('as-stopsday').value = s.max_stops_per_day; $('as-niftyagree').checked = !!s.nifty_agree;
   $('as-nifty-day').value = s.nifty_max_per_day; $('as-stock-day').value = s.stock_max_per_day; $('as-product').value = s.product;
   settingsRows = d.symbols.map(r => ({ ...r, value: { ...r.value } }));
   renderSettingsRows();
@@ -169,7 +170,8 @@ async function saveSettings() {
   try {
     const d = await post('/api/autotrade/settings', {
       min_confidence: Math.round(num('as-conf', 85)), max_positions: Math.round(num('as-maxpos', 5)), max_trades_per_day: Math.round(num('as-maxday', 5)),
-      sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, nifty_max_per_day: g.nifty, stock_max_per_day: g.stock, product: g.product,
+      sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_same_direction: Math.max(0, Math.round(num('as-samedir', 2))), max_stops_per_day: Math.max(0, Math.round(num('as-stopsday', 2))),
+      nifty_agree: $('as-niftyagree').checked, nifty_max_per_day: g.nifty, stock_max_per_day: g.stock, product: g.product,
       universe: settingsRows.map(r => r.symbol), symbols,
     });
     applySettingsView(d);
@@ -184,7 +186,7 @@ async function resetSettings() {
   try {
     applySettingsView(await post('/api/autotrade/settings', {
       min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 10, stock_max_per_day: 1,
-      product: 'CARRYFORWARD', symbols: {}, universe: settingsRows.map(r => r.symbol),
+      product: 'CARRYFORWARD', max_same_direction: 2, max_stops_per_day: 2, nifty_agree: true, symbols: {}, universe: settingsRows.map(r => r.symbol),
     }));
     $('as-msg').style.color = 'var(--green)'; $('as-msg').textContent = 'Reset to defaults.';
     refreshAutoTrade();

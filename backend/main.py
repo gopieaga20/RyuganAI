@@ -844,6 +844,9 @@ class AutoTradeSettings(BaseModel):
     sl_pct: Optional[float] = Field(default=None, ge=0.05, le=0.90)
     tp_pct: Optional[float] = Field(default=None, ge=0.05, le=3.0)
     lots: Optional[int] = Field(default=None, ge=1, le=100)
+    max_same_direction: Optional[int] = Field(default=None, ge=0, le=5)
+    max_stops_per_day: Optional[int] = Field(default=None, ge=0, le=10)
+    nifty_agree: Optional[bool] = None
     nifty_max_per_day: Optional[int] = Field(default=None, ge=1, le=50)
     stock_max_per_day: Optional[int] = Field(default=None, ge=1, le=20)
     product: Optional[str] = Field(default=None, pattern="^(INTRADAY|CARRYFORWARD)$")
@@ -868,7 +871,8 @@ def _settings_view(cfg: dict) -> dict:
                       "max_per_day": sp["max_per_day"], "product": sp["product"]},
         })
     return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe",
-                                                              "nifty_max_per_day", "stock_max_per_day", "product")},
+                                                              "nifty_max_per_day", "stock_max_per_day", "product",
+                                                              "max_same_direction", "max_stops_per_day", "nifty_agree")},
             "symbols": rows}
 
 
@@ -956,7 +960,7 @@ async def autotrade_run(request: Request, dry: bool = True, as_if_open: bool = F
         cfg = await autotrader.load_settings(pool)
         if not cfg["enabled"]:
             raise HTTPException(status_code=400, detail="Auto-trading is off. Switch it on first, or run with dry=true.")
-    now = autotrader.now_ist().replace(hour=10, minute=0) if (dry and as_if_open) else None
+    now = autotrader.now_ist().replace(hour=10, minute=30) if (dry and as_if_open) else None
     decisions = await _run_autotrade_cycle(pool, dry=dry, now=now)
     return {"dry": dry, "decisions": decisions}
 

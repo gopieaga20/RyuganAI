@@ -11,9 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import autotrader as at
 
 IST = at.IST
-MON_10AM = dt.datetime(2026, 11, 2, 10, 0, tzinfo=IST)        # a Monday
+MON_10AM = dt.datetime(2026, 11, 2, 10, 30, tzinfo=IST)        # a Monday
 SAT_10AM = dt.datetime(2026, 11, 7, 10, 0, tzinfo=IST)
 CFG = {**at.DEFAULTS, "enabled": True, "universe": ["NIFTY 50", "RELIANCE", "TCS"]}
+NO_PORTFOLIO_RULES = {"max_same_direction": 0, "max_stops_per_day": 0, "nifty_agree": False}      # for tests of the OTHER limits
 
 
 def call(sym="RELIANCE", call="BUY CE", conf=90, price=1300.0, ts=111):
@@ -191,7 +192,7 @@ def test_cycle_never_exceeds_the_position_limit_and_prefers_the_strongest(patch_
     syms = [f"S{i}" for i in range(8)]
     patch_scan({s: call(s, "BUY CE", 85 + i, 1300.0, ts=i) for i, s in enumerate(syms)})
     store = MemStore()
-    run(at.run_cycle(store, {**CFG, "universe": syms, "max_trades_per_day": 99}, make_deps(), now=MON_10AM))
+    run(at.run_cycle(store, {**CFG, "universe": syms, "max_trades_per_day": 99, **NO_PORTFOLIO_RULES}, make_deps(), now=MON_10AM))
     assert len(store.positions) == 5
     bought = {at.underlying_from_contract(p["symbol"]) for p in store.positions}
     assert bought == {"S7", "S6", "S5", "S4", "S3"}                     # the five highest confidences
@@ -242,7 +243,7 @@ def test_scan_errors_are_isolated():
 def test_dry_run_also_respects_the_position_limit(patch_scan):
     syms = [f"S{i}" for i in range(8)]
     patch_scan({s: call(s, "BUY CE", 90, 1300.0, ts=i) for i, s in enumerate(syms)})
-    out = run(at.run_cycle(MemStore(), {**CFG, "universe": syms, "max_trades_per_day": 99}, make_deps(), now=MON_10AM, dry=True))
+    out = run(at.run_cycle(MemStore(), {**CFG, "universe": syms, "max_trades_per_day": 99, **NO_PORTFOLIO_RULES}, make_deps(), now=MON_10AM, dry=True))
     assert sum(1 for d in out if d["action"] == "WOULD ORDER") == 5
 
 
@@ -276,7 +277,7 @@ def test_only_five_orders_a_day_even_with_free_slots(patch_scan):
     syms = [f"S{i}" for i in range(9)]
     patch_scan({s: call(s, "BUY CE", 90, 1300.0, ts=i) for i, s in enumerate(syms)})
     store = MemStore()
-    cfg = {**CFG, "universe": syms, "max_positions": 20}
+    cfg = {**CFG, "universe": syms, "max_positions": 20, **NO_PORTFOLIO_RULES}
     run(at.run_cycle(store, cfg, make_deps(), now=MON_10AM))
     assert len(store.positions) == 5
     # a later scan the same day (some positions already closed) must still respect the day's count
@@ -422,3 +423,66 @@ def test_intraday_square_off_time():
     assert not at.squareoff_due(dt.datetime(2026, 11, 2, 15, 14, tzinfo=IST))
     assert at.squareoff_due(dt.datetime(2026, 11, 2, 15, 15, tzinfo=IST))
     assert not at.squareoff_due(dt.datetime(2026, 11, 1, 16, 0, tzinfo=IST))                  # a Sunday
+
+
+# ───────────── portfolio risk: same-way cap, daily stops, Nifty agreement, entry from 10:15 ─────────────
+def held(*symbols):
+    return [{"id": i + 1, "symbol": s} for i, s in enumerate(symbols)]
+
+
+def test_at_most_two_positions_bet_the_same_way():
+    two_ce = held("RELIANCE23NOV261300CE", "TCS23NOV263400CE")
+    ok, why = at.decide(call("INFY", "BUY CE"), CFG, two_ce, MON_10AM)
+    assert not ok and "2 call (CE) positions already open" in why and "together" in why
+    assert at.decide(call("INFY", "BUY PE"), CFG, two_ce, MON_10AM)[0]                      # the other way is still allowed
+    assert at.decide(call("INFY", "BUY CE"), CFG, held("RELIANCE23NOV261300CE", "TCS23NOV263400PE"), MON_10AM)[0]
+    assert at.decide(call("INFY", "BUY CE"), {**CFG, "max_same_direction": 3}, two_ce, MON_10AM)[0]       # changeable in Settings
+    assert at.decide(call("INFY", "BUY CE"), {**CFG, "max_same_direction": 0}, two_ce, MON_10AM)[0]       # 0 = off
+
+
+def test_no_new_trades_after_the_days_stop_limit():
+    ok, why = at.decide(call(), CFG, [], MON_10AM, stops_today=2)
+    assert not ok and "2 stop-losses already today" in why
+    assert at.decide(call(), CFG, [], MON_10AM, stops_today=1)[0]
+    assert at.decide(call(), {**CFG, "max_stops_per_day": 0}, [], MON_10AM, stops_today=9)[0]
+
+
+def test_a_stock_call_must_agree_with_the_nifty():
+    ok, why = at.decide(call("RELIANCE", "BUY CE"), CFG, [], MON_10AM, nifty_score=-4)
+    assert not ok and "Nifty's own signal" in why
+    assert not at.decide(call("RELIANCE", "BUY CE"), CFG, [], MON_10AM, nifty_score=1)[0]          # too weak to agree
+    assert at.decide(call("RELIANCE", "BUY CE"), CFG, [], MON_10AM, nifty_score=3)[0]
+    assert at.decide(call("RELIANCE", "BUY PE"), CFG, [], MON_10AM, nifty_score=-3)[0]
+    assert not at.decide(call("RELIANCE", "BUY PE"), CFG, [], MON_10AM, nifty_score=3)[0]
+    assert at.decide(call("NIFTY 50", "BUY CE", price=23100.0), CFG, [], MON_10AM, nifty_score=-4)[0]   # the Nifty itself is exempt
+    assert at.decide(call("RELIANCE", "BUY CE"), CFG, [], MON_10AM, nifty_score=None)[0]            # no Nifty reading: the rule cannot apply
+    assert at.decide(call("RELIANCE", "BUY CE"), {**CFG, "nifty_agree": False}, [], MON_10AM, nifty_score=-4)[0]
+
+
+def test_entries_start_at_10_15():
+    assert at.DEFAULTS["entry_from_min"] == 10 * 60 + 15
+    assert not at.decide(call(), CFG, [], dt.datetime(2026, 11, 2, 10, 14, tzinfo=IST))[0]
+    assert at.decide(call(), CFG, [], dt.datetime(2026, 11, 2, 10, 15, tzinfo=IST))[0]
+
+
+def test_a_cycle_uses_the_nifty_reading_and_todays_stops(patch_scan):
+    nifty = {**call("NIFTY 50", "WAIT", 40, 23100.0), "score": -4}
+    patch_scan({"NIFTY 50": nifty, "RELIANCE": {**call("RELIANCE", "BUY CE", 90), "score": 6}})
+    store = MemStore()
+    out = run(at.run_cycle(store, {**CFG, "universe": ["NIFTY 50", "RELIANCE"]}, make_deps(lots={"RELIANCE": 250}), now=MON_10AM))
+    assert not store.positions and "Nifty's own signal (-4)" in next(d["detail"] for d in out if d["symbol"] == "RELIANCE")
+
+    class Stopped(MemStore):
+        async def stops_today(self, day):
+            return 2
+    patch_scan({"NIFTY 50": {**nifty, "score": 5}, "RELIANCE": {**call("RELIANCE", "BUY CE", 90), "score": 6}})
+    out = run(at.run_cycle(Stopped(), {**CFG, "universe": ["NIFTY 50", "RELIANCE"]}, make_deps(lots={"RELIANCE": 250}), now=MON_10AM))
+    assert "stop-losses already today" in next(d["detail"] for d in out if d["symbol"] == "RELIANCE")
+
+
+def test_the_new_settings_are_saved_and_have_safe_defaults():
+    d = at.DEFAULTS
+    assert d["max_same_direction"] == 2 and d["max_stops_per_day"] == 2 and d["nifty_agree"] is True
+    assert {"max_same_direction", "max_stops_per_day", "nifty_agree"} <= at.USER_KEYS
+    assert at.merge_settings('{"max_same_direction": 1, "nifty_agree": false}')["max_same_direction"] == 1
+    assert at.direction_of_contract("NIFTY10NOV2623950CE") == 1 and at.direction_of_contract("NIFTY10NOV2623950PE") == -1

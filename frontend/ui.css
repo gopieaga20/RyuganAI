@@ -931,3 +931,5 @@ html, body, .app, .layout, .main { background: var(--page); }
 .btn-long.active { background: var(--ce-bg); border-color: var(--ce-bd); color: var(--ce-tx); }
 .tb-name b { color: #7dd3fc; }
 .lv-btn-on, .lv-btn-send { background: var(--sell-bg); color: var(--sell-tx); }
+.as-check{display:flex;flex-direction:row;align-items:center;gap:8px;font-size:11px;color:var(--tx-3)}
+.as-check input{width:auto;height:auto}

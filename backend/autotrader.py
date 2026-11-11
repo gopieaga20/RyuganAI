@@ -12,7 +12,11 @@ Safety rules (all enforced in `decide`):
   * every other stock at most stock_max_per_day orders a day (default 1), changeable in Settings, also per stock;
   * at most max_trades_per_day new auto orders a day for the stocks together (default 5), max_positions open at once (default 5);
   * one auto position per underlying at a time, and one order per symbol per candle;
-  * entries only inside the entry window (default 09:30-14:30 IST). The product decides what happens at the close:
+  * portfolio risk (added after a day on which five CE trades on correlated stocks all hit their stop together):
+      - at most max_same_direction open positions betting the same way (CE = up, PE = down), default 2;
+      - after max_stops_per_day stop-losses today (default 2) no new auto trade is opened until tomorrow;
+      - a stock call must agree with the Nifty's own vote (nifty_agree, default on), so the bot does not buy calls on stocks while the index says down;
+  * entries only inside the entry window (default 10:15-14:30 IST; the opening 45 minutes are skipped). The product decides what happens at the close:
     CARRYFORWARD (default) stays open until its stop or target is hit (or the user exits it); INTRADAY is squared off at 15:15 IST.
 
 Everything that touches the database or the network goes through `Deps` / `Store`, so the logic is unit-tested
@@ -44,7 +48,10 @@ DEFAULTS = {
     "stock_max_per_day": 1,          # every other underlying: orders a day each
     "product": "CARRYFORWARD",       # INTRADAY (squared off at 15:15 IST) or CARRYFORWARD (kept until stop/target)
     "nifty_qty": 130,                # Nifty options are always bought in this quantity (2 lots of 65)
-    "entry_from_min": 9 * 60 + 30,   # IST minutes since midnight
+    "max_same_direction": 2,         # open auto positions allowed to bet the same way (all CE or all PE)
+    "max_stops_per_day": 2,          # stop-losses today after which no new auto trade is opened (0 = no limit)
+    "nifty_agree": True,             # a stock call must agree with the Nifty's own signal
+    "entry_from_min": 10 * 60 + 15,   # IST minutes since midnight
     "entry_to_min": 14 * 60 + 30,
     "min_days_to_expiry": 1,         # skip contracts that expire today
     "universe": DEFAULT_UNIVERSE,
@@ -53,7 +60,7 @@ DEFAULTS = {
 
 # What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
 USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols",
-             "nifty_max_per_day", "stock_max_per_day", "product"}
+             "nifty_max_per_day", "stock_max_per_day", "product", "max_same_direction", "max_stops_per_day", "nifty_agree"}
 PRODUCTS = ("INTRADAY", "CARRYFORWARD")
 SQUAREOFF_MIN = 15 * 60 + 15      # INTRADAY auto positions are closed from 15:15 IST
 # The first version of the settings row saved the WHOLE config (including old stop/target values), so when it is migrated
@@ -159,8 +166,14 @@ def pick_contract(contracts: list, spot: float, today: dt.date, opt_type: str, m
     return min(pool, key=lambda c: (abs(c["strike"] - spot), c["strike"]))
 
 
+def direction_of_contract(symbol: str) -> int:
+    """+1 for a call option (bets up), -1 for a put (bets down), 0 if unknown."""
+    s = (symbol or "").upper()
+    return 1 if s.endswith("CE") else -1 if s.endswith("PE") else 0
+
+
 def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0,
-           by_und: Optional[dict] = None) -> tuple:
+           by_und: Optional[dict] = None, nifty_score: Optional[float] = None, stops_today: int = 0) -> tuple:
     """Return (take_it, reason). The first failing rule is the reason.
     `orders_today` is the number of auto orders today for stocks other than Nifty (the shared daily cap);
     `by_und` is {underlying: orders today}, for the per-underlying daily limit."""
@@ -189,6 +202,17 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
         return False, f"{und} already had {done} auto order{'s' if done != 1 else ''} today (limit {sp['max_per_day']} a day, see Settings)"
     if acted_on_candle:
         return False, "already acted on this candle"
+    direction = 1 if result.get("call") == "BUY CE" else -1
+    cap = int(cfg.get("max_stops_per_day") or 0)
+    if cap and stops_today >= cap:
+        return False, f"{stops_today} stop-losses already today (limit {cap}): no new auto trades until tomorrow"
+    same = sum(1 for p in open_auto if direction_of_contract(p.get("symbol")) == direction)
+    limit = int(cfg.get("max_same_direction") or 0)
+    if limit and same >= limit:
+        return False, (f"{same} {'call (CE)' if direction > 0 else 'put (PE)'} positions already open (limit {limit} the same way): "
+                       "stocks tend to move together, so they would all stop out together")
+    if cfg.get("nifty_agree", True) and und not in ("NIFTY", "BANKNIFTY") and nifty_score is not None and nifty_score * direction < 2:
+        return False, f"the Nifty's own signal ({nifty_score:+g}) does not agree with this {'call' if direction > 0 else 'put'}"
     return True, "ok"
 
 
@@ -209,6 +233,8 @@ class Store:
     async def orders_today(self, day: dt.date) -> int: raise NotImplementedError
     async def orders_today_by_und(self, day: dt.date) -> dict:
         return {}
+    async def stops_today(self, day: dt.date) -> int:
+        return 0
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
     async def save_last_scan(self, scan: dict) -> None: return None
@@ -247,6 +273,8 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
     results = await asyncio.gather(*(one(s) for s in cfg["universe"]))
     decisions = []
     by_und = dict(await store.orders_today_by_und(now.date()))
+    stops = await store.stops_today(now.date())
+    nifty_score = next((r.get("score") for r in results if underlying_of(r["sym"]) == "NIFTY" and r.get("ok", True) and r.get("score") is not None), None)
     previewed = []                      # a dry run counts what it WOULD open, so the position limit still applies
     # strongest calls first, so the position limit goes to the best ones
     for r in sorted(results, key=lambda x: (x.get("call") == "WAIT", -(x.get("confidence") or 0))):
@@ -258,7 +286,7 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
             others = sum(n for u, n in by_und.items() if u != "NIFTY")
-            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und)
+            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und, nifty_score, stops)
             row["detail"] = ""
             if not ok:
                 row["detail"] = why
@@ -383,6 +411,11 @@ class PgStore(Store):
 
     async def orders_today(self, day: dt.date) -> int:
         return sum((await self.orders_today_by_und(day)).values())
+
+    async def stops_today(self, day: dt.date) -> int:
+        async with self.pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM history WHERE source = 'auto' AND reason ILIKE 'SL%' AND (exit_time AT TIME ZONE 'Asia/Kolkata')::date = $1", day) or 0)
 
     async def orders_today_by_und(self, day: dt.date) -> dict:
         async with self.pool.acquire() as conn:
