@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+import outcomes
 import strategy_vote as sv
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -46,7 +47,7 @@ DEFAULTS = {
     "lots": 1,
     "nifty_max_per_day": 10,         # Nifty 50: orders a day (one open at a time)
     "stock_max_per_day": 1,          # every other underlying: orders a day each
-    "product": "CARRYFORWARD",       # INTRADAY (squared off at 15:15 IST) or CARRYFORWARD (kept until stop/target)
+    "product": "INTRADAY",           # INTRADAY (squared off at 15:15 IST) or CARRYFORWARD (kept until stop/target); stocks default to same-day
     "nifty_qty": 130,                # Nifty options are always bought in this quantity (2 lots of 65)
     "max_same_direction": 2,         # open auto positions allowed to bet the same way (all CE or all PE)
     "max_stops_per_day": 2,          # stop-losses today after which no new auto trade is opened (0 = no limit)
@@ -57,6 +58,12 @@ DEFAULTS = {
     "universe": DEFAULT_UNIVERSE,
     "symbols": {},                   # per-underlying overrides, e.g. {"RELIANCE": {"sl_pct": .2, "tp_pct": .4, "lots": 2, "enabled": true}}
 }
+
+# Built-in per-underlying defaults from reports/reversal_study.md (2 years of 15m data, modelled options): same-day square-off cut the average
+# loss on stocks from -379 to -54 Rs/trade; Nifty 50 was the only index with a steady positive result (kept to stop/target); Bank Nifty and
+# the bank stocks lost money on both halves of the period, so they are alert-only until the user switches them on in Settings.
+DEFAULT_SYMBOLS = {"NIFTY": {"product": "CARRYFORWARD"},
+                   "BANKNIFTY": {"enabled": False}, "HDFCBANK": {"enabled": False}, "ICICIBANK": {"enabled": False}, "SBIN": {"enabled": False}}
 
 # What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
 USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols",
@@ -238,6 +245,7 @@ class Store:
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
     async def save_last_scan(self, scan: dict) -> None: return None
+    async def record_signal(self, rec: dict) -> None: return None
 
 
 async def scan_symbol(sym: str, deps: Deps) -> dict:
@@ -298,6 +306,10 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
                 if row["action"] == "WOULD ORDER":
                     previewed.append({"id": -1, "symbol": row["detail"].split(" ")[0]})
             await store.log(row)
+            if not dry:
+                rec = outcomes.signal_record(r, row)
+                if rec:
+                    await store.record_signal(rec)
         elif not r.get("ok", True):
             row["detail"] = r.get("note", "")
             row["action"] = "ERROR"
@@ -325,8 +337,8 @@ def clean_symbols(raw) -> dict:
                     continue
                 if lo <= x <= hi:
                     row[f] = int(x) if f in ("lots", "max_per_day") else round(x, 4)
-        if v.get("enabled") is False:
-            row["enabled"] = False
+        if isinstance(v.get("enabled"), bool):
+            row["enabled"] = v["enabled"]
         if str(v.get("product") or "").upper() in PRODUCTS:
             row["product"] = str(v["product"]).upper()
         if row:
@@ -337,9 +349,9 @@ def clean_symbols(raw) -> dict:
 def symbol_params(cfg: dict, und: Optional[str]) -> dict:
     """The stop, target, lots and on/off to use for one underlying: its own override, else the global value.
     `lots` is None when neither an override nor a global rule applies (then Nifty uses its fixed quantity)."""
-    ov = (cfg.get("symbols") or {}).get(und or "", {})
+    ov = {**DEFAULT_SYMBOLS.get(und or "", {}), **(cfg.get("symbols") or {}).get(und or "", {})}
     default_cap = cfg.get("nifty_max_per_day", 10) if und == "NIFTY" else cfg.get("stock_max_per_day", 1)
-    product = ov.get("product") or (cfg.get("product") if cfg.get("product") in PRODUCTS else "CARRYFORWARD")
+    product = ov.get("product") or (cfg.get("product") if cfg.get("product") in PRODUCTS else "INTRADAY")
     return {"sl_pct": ov.get("sl_pct", cfg["sl_pct"]), "tp_pct": ov.get("tp_pct", cfg["tp_pct"]),
             "lots": ov.get("lots"), "enabled": ov.get("enabled", True) is not False,
             "max_per_day": int(ov.get("max_per_day") or default_cap), "product": product}
@@ -444,6 +456,9 @@ class PgStore(Store):
             await conn.execute(
                 "INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
                 LAST_SCAN_KEY, json.dumps({"at": scan["at"], "rows": slim}, default=str))
+
+    async def record_signal(self, rec: dict) -> None:
+        await outcomes.record(self.pool, rec)
 
     async def log(self, row: dict) -> None:
         async with self.pool.acquire() as conn:

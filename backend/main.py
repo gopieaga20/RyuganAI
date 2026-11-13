@@ -53,6 +53,7 @@ from brokers import registry as brokers
 import live_rules
 import live_exits
 import notify
+import outcomes
 
 brokers.load_defaults()
 
@@ -166,7 +167,7 @@ async def _notify_scan(pool, rows: list):
 
 
 async def _alert_only_scan(pool, cfg):
-    """Auto-trading is OFF but call alerts are ON: scan the universe and alert, without logging or ordering anything."""
+    """Auto-trading is OFF: scan the universe, record every call in the outcome log, and send call alerts if they are on. Never orders anything."""
     deps = await _autotrade_deps()
     sem = asyncio.Semaphore(4)
 
@@ -177,7 +178,14 @@ async def _alert_only_scan(pool, cfg):
     results = await asyncio.gather(*(one(s) for s in cfg["universe"]), return_exceptions=True)
     rows = [{"symbol": r["sym"], "call": r.get("call"), "confidence": r.get("confidence", 0), "candle_ts": r.get("candle_ts"),
              "price": r.get("price"), "news": r.get("news")} for r in results if isinstance(r, dict) and r.get("ok", True)]
-    await _notify_scan(pool, rows)
+    for r in results:
+        if isinstance(r, dict) and r.get("ok", True):
+            rec = outcomes.signal_record(r, {"action": "ALERT"})
+            if rec:
+                await outcomes.record(pool, rec)
+    ncfg = await notify.load_settings(pool)
+    if ncfg["enabled"] and ncfg["calls"] and notify.configured():
+        await _notify_scan(pool, rows)
 
 
 async def _autotrade_loop(pool):
@@ -192,9 +200,9 @@ async def _autotrade_loop(pool):
             if cfg["enabled"] and autotrader.market_open(autotrader.now_ist()):
                 await _run_autotrade_cycle(pool)
             elif autotrader.market_open(autotrader.now_ist()):
-                ncfg = await notify.load_settings(pool)
-                if ncfg["enabled"] and ncfg["calls"] and notify.configured():
-                    await _alert_only_scan(pool, cfg)
+                await _alert_only_scan(pool, cfg)
+            else:
+                await outcomes.resolve_pending(pool, (await _autotrade_deps()).fetch_candles)   # score today's calls once the day is over
             last_error = None
         except asyncio.CancelledError:
             raise
@@ -304,6 +312,7 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
                 pos["symbol"], pos["type"], pos["qty"],
                 pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"]
             )
+    await outcomes.track_premium(pool, position_id, exit_price, closed_at=time.time())
     return pnl
 
 
@@ -376,6 +385,8 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                 ltp = await _fetch_ltp(pos["price_symbol"] or pos["symbol"])
                 if ltp is None:
                     continue
+                if pos["source"] == "auto":
+                    await outcomes.track_premium(pool, pos["id"], ltp)           # real premium path for the outcome log
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
                 if (not reason and pos["source"] == "auto" and pos["product"] == "MIS" and autotrader.squareoff_due(autotrader.now_ist())):
                     reason = "Auto square-off 15:15"            # an INTRADAY auto position does not stay open past the close
@@ -582,6 +593,7 @@ async def _ensure_schema(pool: asyncpg.Pool):
                 updated     TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await outcomes.ensure_schema(conn)
         await conn.execute("ALTER TABLE live_orders ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         await conn.execute("ALTER TABLE live_exits ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         # Safe migration: add new columns if they don't exist on old tables
@@ -718,6 +730,31 @@ async def get_history(request: Request, page: int = 1, page_size: int = 25):
             "SELECT * FROM history ORDER BY exit_time DESC, id DESC LIMIT $1 OFFSET $2", page_size, (page - 1) * page_size
         )
     return {"history": [dict(h) for h in hist], "total": total, "page": page, "pages": pages, "page_size": page_size}
+
+
+@app.get("/api/paper/history.csv")
+async def download_history(request: Request):
+    """Every closed paper trade as a CSV file (opens in Excel / Google Sheets), oldest first."""
+    import csv, io
+    from fastapi.responses import Response
+    async with _get_pool(request).acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM history ORDER BY exit_time ASC, id ASC")
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+    def safe(v):                                   # a cell starting with = + - @ would run as a formula in a spreadsheet
+        s = "" if v is None else str(v)
+        return "'" + s if s[:1] in ("=", "+", "-", "@") and not s.lstrip("+-").replace(".", "", 1).isdigit() else s
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Exit time (IST)", "Symbol", "Type", "Qty", "Entry price", "Exit price", "P&L (Rs)", "Charges (Rs)", "Net P&L (Rs)", "Reason", "Source"])
+    for h in rows:
+        pnl, ch = float(h["pnl"]), float(h["charges"] or 0)
+        t = h["exit_time"].astimezone(ist).strftime("%Y-%m-%d %H:%M:%S") if h["exit_time"] else ""
+        w.writerow([t, safe(h["symbol"]), h["type"], h["qty"], float(h["entry_price"]), float(h["exit_price"]), round(pnl, 2), round(ch, 2),
+                    round(pnl - ch, 2), safe(h["reason"]), h["source"]])
+    name = "paper-trade-history-" + datetime.datetime.now(ist).strftime("%Y%m%d") + ".csv"
+    return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.post("/api/paper/trade")
@@ -866,7 +903,9 @@ def _settings_view(cfg: dict) -> dict:
         rows.append({
             "symbol": sym, "underlying": und, "lot_size": lot, "tradable": und is not None,
             "default": {"sl_pct": cfg["sl_pct"], "tp_pct": cfg["tp_pct"], "lots": default_lots,
-                        "max_per_day": cfg["nifty_max_per_day"] if und == "NIFTY" else cfg["stock_max_per_day"], "product": cfg["product"]},
+                        "max_per_day": cfg["nifty_max_per_day"] if und == "NIFTY" else cfg["stock_max_per_day"],
+                        "product": autotrader.DEFAULT_SYMBOLS.get(und or "", {}).get("product", cfg["product"]),
+                        "enabled": autotrader.DEFAULT_SYMBOLS.get(und or "", {}).get("enabled", True)},
             "value": {"sl_pct": sp["sl_pct"], "tp_pct": sp["tp_pct"], "lots": sp["lots"] or default_lots, "enabled": sp["enabled"],
                       "max_per_day": sp["max_per_day"], "product": sp["product"]},
         })
@@ -948,6 +987,20 @@ async def autotrade_settings(req: AutoTradeSettings, request: Request):
         patch["symbols"] = autotrader.clean_symbols({k: {f: x for f, x in v.items() if x is not None} for k, v in patch["symbols"].items()})
     cfg = await autotrader.save_settings(_get_pool(request), patch)
     return _settings_view(cfg)
+
+
+@app.get("/api/outcomes/summary")
+async def outcomes_summary(request: Request, days: int = 90):
+    """How the scanner's calls actually did (traded or not), per symbol, with read-only suggestions. Changes nothing."""
+    return outcomes.summarise(await outcomes.load_rows(_get_pool(request), max(1, min(days, 365))))
+
+
+@app.get("/api/outcomes/recent")
+async def outcomes_recent(request: Request, limit: int = 50):
+    rows = await outcomes.load_rows(_get_pool(request), 30)
+    keep = ("symbol", "call", "confidence", "candle_ts", "traded", "action", "outcome", "mfe_atr", "mae_atr", "ret_1h_atr", "ret_eod_atr",
+            "opt_entry", "opt_peak", "opt_low", "opt_exit")
+    return {"rows": [{k: (float(r[k]) if hasattr(r[k], "as_tuple") else r[k]) for k in keep} for r in rows[:max(1, min(limit, 200))]]}
 
 
 @app.post("/api/autotrade/run")

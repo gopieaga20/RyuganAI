@@ -123,7 +123,7 @@
         <button class="nav-btn" onclick="switchTab('tradelog')" data-tab="tradelog">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span><span class="nav-label">Trade Log</span>
         </button>
-        <button class="nav-btn nav-btn-live" onclick="switchTab('live')" data-tab="live">
+        <button class="nav-btn nav-btn-live" onclick="switchTab('live')" data-tab="live" hidden style="display:none">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span><span class="nav-label">Live</span>
         </button>
         <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
@@ -1278,6 +1278,20 @@
             </div>
           </div>
         </div>
+        <div class="card mb12" id="oc-card">
+          <div class="pt-section-header">
+            <span class="card-title" style="margin:0">Outcome log: how the calls actually did</span>
+            <div class="pt-actions"><button class="btn btn-ghost btn-sm" id="oc-refresh">↺ Refresh</button></div>
+          </div>
+          <p class="muted small" id="oc-note" style="margin:0 0 8px">Every BUY CE / BUY PE call is recorded, traded or not, and scored after the day closes: did the market move 1 ATR the right way before 1 ATR against it? Nothing here changes any setting.</p>
+          <div id="oc-tips" class="small" style="margin-bottom:8px"></div>
+          <div class="tbl-wrap">
+            <table class="dtbl">
+              <thead><tr><th>Symbol</th><th>Calls</th><th>Scored</th><th>Worked</th><th>Reversed</th><th>Worked %</th><th>Avg 1h (ATR)</th><th>Avg to close (ATR)</th><th>Traded</th></tr></thead>
+              <tbody id="oc-body"><tr><td colspan="9" class="empty-cell">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
         <div class="card mb12">
           <div class="pt-section-header">
             <span class="card-title" style="margin:0">Active Positions</span>
@@ -1331,7 +1345,10 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-title">Trade History</div>
+          <div class="pt-section-header">
+            <span class="card-title" style="margin:0">Trade History</span>
+            <div class="pt-actions"><button type="button" class="btn btn-ghost btn-sm" id="pt-download" title="Download every closed trade as a CSV file">⬇ Download CSV</button></div>
+          </div>
           <div class="tbl-wrap">
             <table class="dtbl">
               <thead>

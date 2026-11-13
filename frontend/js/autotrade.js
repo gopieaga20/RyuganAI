@@ -163,8 +163,8 @@ async function saveSettings() {
     const defLots = r.underlying === 'NIFTY' ? r.default.lots : g.lots;
     if (v.lots !== defLots) ov.lots = v.lots;
     if (v.max_per_day !== (r.underlying === 'NIFTY' ? g.nifty : g.stock)) ov.max_per_day = v.max_per_day;
-    if (v.product !== g.product) ov.product = v.product;
-    if (!v.enabled) ov.enabled = false;
+    if (v.product !== (r.default.product || g.product)) ov.product = v.product;
+    if (v.enabled !== (r.default.enabled !== false)) ov.enabled = v.enabled;
     if (Object.keys(ov).length) symbols[r.underlying] = ov;
   }
   try {
@@ -186,7 +186,7 @@ async function resetSettings() {
   try {
     applySettingsView(await post('/api/autotrade/settings', {
       min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 10, stock_max_per_day: 1,
-      product: 'CARRYFORWARD', max_same_direction: 2, max_stops_per_day: 2, nifty_agree: true, symbols: {}, universe: settingsRows.map(r => r.symbol),
+      product: 'INTRADAY', max_same_direction: 2, max_stops_per_day: 2, nifty_agree: true, symbols: {}, universe: settingsRows.map(r => r.symbol),
     }));
     $('as-msg').style.color = 'var(--green)'; $('as-msg').textContent = 'Reset to defaults.';
     refreshAutoTrade();
@@ -253,7 +253,25 @@ function wireSettings() {
   rows?.addEventListener('change', e => { if (e.target.classList.contains('as-en')) e.target.closest('tr').classList.toggle('as-off', !e.target.checked); });
 }
 
+/* ───────────── Outcome log: how the calls did (read-only) ───────────── */
+async function refreshOutcomes() {
+  const body = $('oc-body'); if (!body) return;
+  try {
+    const d = await api('/api/outcomes/summary');
+    const rows = Object.entries(d.by_symbol).sort((a, b) => b[1].resolved - a[1].resolved);
+    const f = v => (v == null ? '-' : v);
+    body.innerHTML = rows.map(([s, t]) => `<tr><td><b>${DOM.esc(s)}</b></td><td>${t.signals}</td><td>${t.resolved}</td><td>${t.worked}</td><td>${t.reversed}</td>
+      <td>${t.worked_pct == null ? '-' : t.worked_pct + '%'}</td><td>${f(t.avg_ret_1h_atr)}</td><td>${f(t.avg_ret_eod_atr)}</td><td>${t.traded}</td></tr>`).join('')
+      || '<tr><td colspan="9" class="empty-cell">No calls recorded yet. They appear here while the market is open.</td></tr>';
+    $('oc-tips').innerHTML = d.suggestions.length
+      ? d.suggestions.map(t => `<div><b>${DOM.esc(t.symbol)}</b>: suggest <b>${t.advice}</b>, ${DOM.esc(t.why)}. (Your decision; nothing changed.)</div>`).join('')
+      : `<span class="muted">No suggestions yet. A symbol is only judged after ${d.min_sample} decided calls.</span>`;
+  } catch (e) { body.innerHTML = `<tr><td colspan="9" class="empty-cell">Could not load: ${DOM.esc(e.message)}</td></tr>`; }
+}
+
 export function initAutoTrade() {
+  $('oc-refresh')?.addEventListener('click', refreshOutcomes);
+  refreshOutcomes();
   document.querySelectorAll('.at-toggle').forEach(el => el.addEventListener('change', e => toggle(e.target.checked)));
   $('at-preview')?.addEventListener('click', preview);
   wireSettings();

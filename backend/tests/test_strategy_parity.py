@@ -91,3 +91,96 @@ def test_combine_rules():
     assert sv.combine(ce, {"ok": True, "call": "BUY PE"})["call"] == "WAIT"
     assert sv.combine(ce, {"ok": True, "call": "BUY CE"})["confidence"] == 75
     assert sv.combine(ce, {"ok": True, "call": "WAIT"})["call"] == "BUY CE"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_smart_money_vote_matches_javascript_on_every_bar(name):
+    """The SMC vote is rare, so check it on EVERY bar (the general test samples one bar in nine)."""
+    candles = make_candles(**SCENARIOS[name])
+    ends = list(range(60, len(candles)))
+    js = run_js(candles, ends, True, None)
+    nonzero = 0
+    for e, r in zip(ends, js):
+        py = sv.evaluate(candles[: e + 1], intraday=True, news_label=None)
+        want = next(v["vote"] for v in r["votes"] if v["id"] == "smc")
+        got = next(v["vote"] for v in py["votes"] if v["id"] == "smc")
+        assert got == want, f"{name} bar {e}: python {got} vs javascript {want}"
+        nonzero += want != 0
+    assert nonzero >= 0
+
+
+def make_impulsive(n, seed):
+    """A market that moves in bursts: quiet drift, then a few big one-directional candles, then a pullback. Gives the SMC rules (order blocks,
+    displacement, sweeps) something to find, which the smooth scenarios above almost never do."""
+    rnd = random.Random(seed)
+    out, prev, direction, left = [], 100.0, 1, 0
+    for i in range(n):
+        phase = i % 40
+        if phase == 12:
+            direction = 1 if rnd.random() < 0.5 else -1
+        if 12 <= phase < 15:
+            body = direction * (2.2 + rnd.random() * 1.2)             # displacement burst
+        elif 15 <= phase < 24:
+            body = -direction * (0.2 + rnd.random() * 0.5)            # pullback
+        else:
+            body = (rnd.random() - 0.5) * 0.7
+        c = prev + body
+        h = max(prev, c) + rnd.random() * 0.5
+        l = min(prev, c) - rnd.random() * 0.5
+        day, k = divmod(i, 25)
+        out.append({"ts": T0 + day * 86400000 + k * 15 * 60000, "o": prev, "h": h, "l": l, "c": c, "v": 1000 + int(rnd.random() * 900)})
+        prev = c
+    return out
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("seed", [1, 2, 3, 4])
+def test_smart_money_vote_matches_javascript_on_bursty_markets(seed):
+    candles = make_impulsive(520, seed)
+    ends = list(range(60, len(candles)))
+    js = run_js(candles, ends, True, None)
+    nonzero = 0
+    for e, r in zip(ends, js):
+        py = sv.evaluate(candles[: e + 1], intraday=True, news_label=None)
+        want = next(v["vote"] for v in r["votes"] if v["id"] == "smc")
+        got = next(v["vote"] for v in py["votes"] if v["id"] == "smc")
+        assert got == want, f"seed {seed} bar {e}: python {got} vs javascript {want}"
+        nonzero += want != 0
+    assert nonzero >= 1, "the generator should produce some SMC setups so the comparison means something"
+    print(f"seed {seed}: {nonzero} non-zero SMC votes compared")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("source", ["trend", "down", "choppy", "burst1", "burst2", "burst3"])
+def test_support_resistance_vote_matches_javascript_on_every_bar(source):
+    if source.startswith("burst"):
+        candles = make_impulsive(600, int(source[-1]) + 20)
+    else:
+        candles = make_candles(**SCENARIOS[{"trend": "uptrend", "down": "downtrend", "choppy": "choppy_big"}[source]])
+    ends = list(range(60, len(candles)))
+    js = run_js(candles, ends, True, None)
+    nonzero = 0
+    for e, r in zip(ends, js):
+        py = sv.evaluate(candles[: e + 1], intraday=True, news_label=None)
+        want = next(v["vote"] for v in r["votes"] if v["id"] == "sr")
+        got = next(v["vote"] for v in py["votes"] if v["id"] == "sr")
+        assert got == want, f"{source} bar {e}: python {got} vs javascript {want}"
+        nonzero += want != 0
+    print(f"{source}: {nonzero} non-zero S/R votes compared")
+    if source.startswith("burst"):
+        assert nonzero >= 1
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_support_resistance_is_shown_but_does_not_change_the_call():
+    """Weight 0: the row appears in the strategy check, but the score, the maximum and the call are exactly what they were without it."""
+    candles = make_candles(**SCENARIOS["uptrend"])
+    py = sv.evaluate(candles, intraday=True, news_label=None)
+    sr = next(v for v in py["votes"] if v["id"] == "sr")
+    assert sr["weight"] == 0
+    others = [v for v in py["votes"] if v["id"] != "sr"]
+    assert py["score"] == sum(v["vote"] * v["weight"] for v in others)
+    assert py["maxScore"] == sum(v["weight"] for v in others)
+    daily = sv.evaluate(candles, intraday=False, news_label=None)
+    assert all(v["id"] != "sr" for v in daily["votes"])              # previous-day levels mean nothing on daily candles

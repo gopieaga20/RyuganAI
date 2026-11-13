@@ -123,3 +123,16 @@ Upstox setup: create the app, set the Redirect URL to UPSTOX_REDIRECT_URI, regis
 
 ## Theme and tiles
 Tokens live in the "white + midnight cyan" block of frontend/ui.css (dark: midnight cyan #0A2A33 primary, white secondary; light: white primary, midnight cyan secondary; --brand/--on-brand carry the button swap). Every data-table row (table.dtbl, table.scan-table) is drawn as a tile by the "tiles" block in ui.css; js/tiles.js stamps data-label (column name) and data-tone (profit/loss) on cells. Add class keep-table to a table that must stay a real table (the per-stock settings table and the option chain do).
+
+## Smart money concepts (SMC)
+frontend/js/smc.js (ported to backend/strategy_vote.py, parity-tested on every bar): structure bias + an order block, fair-value-gap or liquidity-sweep point of interest, taken in the discount (long) or premium (short) half of the last swing range. It is a weight-2 vote in the strategy vote, so a BUY CE / BUY PE (ATM) call now needs the SMC setup to agree to reach 85% confidence. tools/bt_strategies.mjs backtests every strategy alone and in combinations and writes reports/strategy_backtest_report.md (2 years, 14 symbols, modelled option prices): no strategy beats a random-direction yardstick.
+SMC update: the vote uses the displacement variant (the structure break behind the setup must be a big one-directional candle); frontend/js/smc.js also has sweepChoch (liquidity sweep then change of character). Both were backtested in reports/strategy_backtest_report.md (sections 2b and 4); neither survives a correction for the number of strategies tried.
+Support / resistance (frontend/js/sr.js, ported to backend/strategy_vote.py, parity-tested on every bar): previous day high/low/close and swing levels; breakout, break-and-retest and rejection setups. It is shown in the strategy check and as chart lines but has weight 0 because the backtest found it does not help the vote.
+Chart overlays for the smart-money rules (frontend/js/chart-view.js): Order blocks (sky blue = bullish, orange = bearish, unmitigated only), Liquidity sweeps, Displacement candles, Sweep to CHoCH. They use the same functions as the strategy (frontend/js/smc.js), so the chart shows exactly what the vote sees.
+
+## Outcome log (backend/outcomes.py)
+Every BUY CE / BUY PE call the scanner makes is stored in `signal_outcomes` (traded or not, with the vote snapshot, ATR, ADX). Once the trading day is over
+the resolver scores it on the underlying: +1 ATR before -1 ATR = worked / reversed / neither, plus the 1-hour and to-close moves. For positions the auto-trader
+opens, the real option premium path (entry, peak, low, exit) is kept from the SL/TP watcher. The scan loop records calls even when auto-trading is off.
+`GET /api/outcomes/summary` and `/recent`; Paper page shows a per-symbol table. Suggestions (alert-only / keep) need 50+ decided calls and are advice only; the app never
+changes settings by itself. The Live nav button is hidden (the page and #/live still exist for the broker redirect).

@@ -6,6 +6,8 @@
  * These are classic rules; backtests of them have NOT shown a proven edge, so the UI labels calls as unproven. */
 import { Indicators } from './indicators.js';
 import { buildStructure, fvgRetest } from './smc-structure.js';
+import { smcWithDisplacement } from './smc.js';
+import { srSignal } from './sr.js';
 import { vwapIst } from './candles.js';
 
 export const STRATEGIES = [
@@ -15,6 +17,9 @@ export const STRATEGIES = [
   { id: 'structure', name: 'Structure BOS / CHoCH', weight: 2 },
   { id: 'fvg',       name: 'FVG retest',           weight: 1 },
   { id: 'volume',    name: 'Volume push',          weight: 1 },
+  { id: 'smc',       name: 'Smart money (SMC + displacement)', weight: 2 },
+  // Support / resistance is SHOWN but carries weight 0: backtests (reports/strategy_backtest_report.md, section 2c) found that forcing it into the vote made results worse.
+  { id: 'sr',        name: 'Support / resistance (previous day high-low)', weight: 0 },
   { id: 'news',      name: 'News sentiment',       weight: 1 },
 ];
 
@@ -90,7 +95,16 @@ export function evaluate(candles, opts = {}) {
   else if (c.v > 1.5 * vAvg && c.c < c.o) add('volume', -1, `Down candle on ${(c.v / vAvg).toFixed(1)}x average volume`);
   else add('volume', 0, 'Volume is ordinary');
 
-  // 7. news
+  // 7. smart money concepts: an order block, gap or liquidity sweep in the direction of the structure, taken in the discount (long) or premium (short) half,
+  //    and the structure break behind it must have been a displacement candle (a big one-directional candle)
+  const sm = smcWithDisplacement(candles, S, i, opts.swingK || 3);
+  add('smc', sm.vote, sm.reason);
+
+  // 8. support / resistance: previous-day high / low and swing levels (intraday only: previous-session levels mean nothing on daily candles)
+  let srRead = null;
+  if (intraday) { srRead = srSignal(candles, i, opts.swingK || 3); add('sr', srRead.vote, srRead.reason); }
+
+  // 9. news
   if (opts.news) {
     const l = opts.news.label;
     add('news', l === 'BULLISH' ? 1 : l === 'BEARISH' ? -1 : 0, `Headlines are ${String(l).toLowerCase()}`);
@@ -108,7 +122,7 @@ export function evaluate(candles, opts = {}) {
 
   const dir = call === 'BUY CE' ? 1 : call === 'BUY PE' ? -1 : (score >= 0 ? 1 : -1);
   const levels = { entry: price, sl: price - dir * 1.5 * atr, t1: price + dir * 2 * atr, t2: price + dir * 3.5 * atr, atr };
-  return { ok: true, call, confidence, score, maxScore, adx, rsi, price, atr, votes, levels, reason: why, ts: c.ts };
+  return { ok: true, call, confidence, score, maxScore, adx, rsi, price, atr, votes, levels, smc: sm, sr: srRead, reason: why, ts: c.ts };
 }
 
 /** Primary timeframe decides; the faster timeframe must not disagree. */

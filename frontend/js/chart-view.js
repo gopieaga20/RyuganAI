@@ -5,6 +5,8 @@ import { subscribeLivePrices } from './ws-prices.js';
 import { Indicators } from './indicators.js';
 import { buildStructure } from './smc-structure.js';
 import { evaluate } from './strategies.js';
+import { sessionLevels } from './sr.js';
+import { orderBlockOf, pivots, liquiditySweep, isDisplacement, sweepChoch } from './smc.js';
 import { toCandles, vwapIst } from './candles.js';
 import { CHART_TF } from './timeframes.js';
 
@@ -18,6 +20,11 @@ export const CHART_OVERLAYS = [
   { id: 'rsi',     label: 'RSI',         on: true },
   { id: 'struct',  label: 'BOS / CHoCH', on: true },
   { id: 'fvg',     label: 'FVG zones',   on: true },
+  { id: 'ob',      label: 'Order blocks', on: true },
+  { id: 'sweep',   label: 'Liquidity sweeps', on: true },
+  { id: 'disp',    label: 'Displacement', on: false },
+  { id: 'seq',     label: 'Sweep to CHoCH', on: false },
+  { id: 'sr',      label: 'Prev day H/L', on: true },
   { id: 'signals', label: 'Signals',     on: true },
 ];
 
@@ -27,7 +34,7 @@ export const ChartView = (() => {
   let main = null, rsiChart = null, el = null, rsiEl = null;
   let candleS = null, volS = null, rsiS = null, rsiHi = null, rsiLo = null;
   let lines = {};                 // id -> line series (ema9, ema21, ema50, vwap, bbU, bbM, bbL)
-  let fvgLines = [], priceLines = [];
+  let fvgLines = [], priceLines = [], obLines = [];
   let state = { sym: null, tf: CHART_TF[2], candles: [], overlays: Object.fromEntries(CHART_OVERLAYS.map(o => [o.id, o.on])), levels: null };
   let unsub = null, loadSeq = 0, onData = null, syncing = false;
   let legendEl = null, idxByTime = new Map(), ind = null;
@@ -127,7 +134,9 @@ export const ChartView = (() => {
 
     drawMarkers();
     drawFvg();
+    drawOb();
     drawLevels();
+    drawSR();
     updateLegend(cs.length - 1);
   }
 
@@ -138,6 +147,8 @@ export const ChartView = (() => {
     candleS.setMarkers([]);
     for (const x of fvgLines) main.removeSeries(x);
     fvgLines = [];
+    for (const x of obLines) main.removeSeries(x);
+    obLines = [];
     for (const pl of priceLines) candleS.removePriceLine(pl);
     priceLines = [];
     idxByTime = new Map(); ind = null;
@@ -189,6 +200,29 @@ export const ChartView = (() => {
         marks.push({ time: t(c), position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: ev.type === 'CHoCH' ? '#ffb020' : (long ? '#26a69a' : '#ef5350'), text: ev.type });
       });
     }
+    if ((o.sweep || o.disp || o.seq) && cs.length > 20) {
+      const S2 = buildStructure(cs, 3), n = cs.length;
+      if (o.sweep) {                                    // a wick that takes the last swing low / high and closes back inside (only pivots already confirmed at that bar are used)
+        const pv = pivots(cs, n - 1, 3), known = []; let pi = 0;
+        for (let i = 0; i < n; i++) {
+          while (pi < pv.length && pv[pi].idx <= i - 3) known.push(pv[pi++]);
+          const sw = liquiditySweep(cs, known, i);
+          if (sw) marks.push({ time: t(cs[i]), position: sw > 0 ? 'belowBar' : 'aboveBar', shape: 'circle', color: sw > 0 ? '#7dd3fc' : '#fdba74', text: 'SWEEP' });
+        }
+      }
+      if (o.disp) {                                     // structure breaks made by a big one-directional candle
+        for (let i = 0; i < n; i++) {
+          const ev = S2.events[i];
+          if (ev && isDisplacement(cs, i, ev.dir)) marks.push({ time: t(cs[i]), position: ev.dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'square', color: '#c4b5fd', text: 'DISP' });
+        }
+      }
+      if (o.seq) {                                      // liquidity sweep followed by a change of character, on the CHoCH candle
+        for (let i = Math.max(60, n - 150); i < n; i++) {
+          const r = sweepChoch(cs, S2, i);
+          if (r.vote && r.stage === 'choch') marks.push({ time: t(cs[i]), position: r.vote > 0 ? 'belowBar' : 'aboveBar', shape: r.vote > 0 ? 'arrowUp' : 'arrowDown', color: '#f0abfc', text: 'SWEEP>CHoCH' });
+        }
+      }
+    }
     if (o.signals && cs.length > 80) {
       // replay the vote over the most recent bars; mark where a CE/PE call first appears
       let prev = 'WAIT';
@@ -212,7 +246,7 @@ export const ChartView = (() => {
       }
     }
     marks.sort((a, b) => a.time - b.time);
-    candleS.setMarkers(marks.slice(-90));
+    candleS.setMarkers(marks.slice(-160));
   }
 
   function drawFvg() {
@@ -235,6 +269,43 @@ export const ChartView = (() => {
         fvgLines.push(s);
       }
     }
+  }
+
+  /** Unmitigated order blocks (the last opposite candle before a structure break) as two solid lines each: sky blue = bullish, orange = bearish. */
+  function drawOb() {
+    for (const x of obLines) main.removeSeries(x);
+    obLines = [];
+    const cs = cur();
+    if (!state.overlays.ob || cs.length < 30) return;
+    const S = buildStructure(cs, 3), last = cs.length - 1, live = [];
+    for (let b = last - 1; b >= Math.max(1, last - 120) && live.length < 3; b--) {
+      const ev = S.events[b]; if (!ev) continue;
+      const ob = orderBlockOf(cs, b, ev.dir); if (!ob) continue;
+      let dead = false;
+      for (let m = b + 1; m <= last; m++) if (ev.dir === 'LONG' ? cs[m].c < ob.bottom : cs[m].c > ob.top) { dead = true; break; }
+      if (!dead) live.push(ob);
+    }
+    for (const ob of live) {
+      const col = ob.dir === 'LONG' ? '#38bdf8' : '#fb923c';
+      for (const price of [ob.top, ob.bottom]) {
+        const ln = main.addLineSeries({ color: col, lineWidth: 2, lineStyle: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        ln.setData([{ time: t(cs[ob.idx]), value: price }, { time: t(cs[last]), value: price }]);
+        obLines.push(ln);
+      }
+    }
+  }
+
+  /** Previous day high / low / close as horizontal lines (intraday charts only): the levels the support/resistance strategy reads. */
+  let srLines = [];
+  function drawSR() {
+    for (const pl of srLines) candleS.removePriceLine(pl);
+    srLines = [];
+    const cs = cur();
+    if (!state.overlays.sr || !state.tf.intraday || cs.length < 30) return;
+    const L = sessionLevels(cs, cs.length - 1);
+    if (!L) return;
+    const add = (price, color, title) => srLines.push(candleS.createPriceLine({ price, color, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title }));
+    add(L.pdh, css('--up', '#4ade80'), 'PDH'); add(L.pdl, css('--down', '#f87171'), 'PDL'); add(L.pdc, css('--tx-3', '#94a3b8'), 'PDC');
   }
 
   function drawLevels() {

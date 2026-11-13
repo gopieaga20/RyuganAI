@@ -403,9 +403,9 @@ def test_a_cycle_orders_a_stock_only_once_a_day(patch_scan):
 
 
 def test_the_product_is_a_setting_with_a_per_stock_override():
-    assert at.DEFAULTS["product"] == "CARRYFORWARD"
-    assert at.symbol_params(CFG, "TCS")["product"] == "CARRYFORWARD"
-    assert at.symbol_params({**CFG, "product": "INTRADAY"}, "TCS")["product"] == "INTRADAY"
+    assert at.DEFAULTS["product"] == "INTRADAY"
+    assert at.symbol_params(CFG, "TCS")["product"] == "INTRADAY"
+    assert at.symbol_params({**CFG, "product": "CARRYFORWARD"}, "TCS")["product"] == "CARRYFORWARD"
     mixed = {**CFG, "product": "INTRADAY", "symbols": at.clean_symbols({"RELIANCE": {"product": "carryforward", "max_per_day": 2}, "TCS": {"product": "bogus"}})}
     assert at.symbol_params(mixed, "RELIANCE")["product"] == "CARRYFORWARD" and at.symbol_params(mixed, "RELIANCE")["max_per_day"] == 2
     assert "TCS" not in mixed["symbols"] and at.symbol_params(mixed, "TCS")["product"] == "INTRADAY"
@@ -486,3 +486,33 @@ def test_the_new_settings_are_saved_and_have_safe_defaults():
     assert {"max_same_direction", "max_stops_per_day", "nifty_agree"} <= at.USER_KEYS
     assert at.merge_settings('{"max_same_direction": 1, "nifty_agree": false}')["max_same_direction"] == 1
     assert at.direction_of_contract("NIFTY10NOV2623950CE") == 1 and at.direction_of_contract("NIFTY10NOV2623950PE") == -1
+
+
+def test_built_in_defaults_from_the_reversal_study():
+    assert at.symbol_params(CFG, "NIFTY")["product"] == "CARRYFORWARD"
+    for und in ("BANKNIFTY", "HDFCBANK", "ICICIBANK", "SBIN"):
+        assert at.symbol_params(CFG, und)["enabled"] is False
+    assert at.symbol_params(CFG, "TCS")["enabled"] is True
+    # the user can switch a bank stock back on, and that choice is kept
+    on = {**CFG, "symbols": at.clean_symbols({"SBIN": {"enabled": True}})}
+    assert at.symbol_params(on, "SBIN")["enabled"] is True and at.symbol_params(on, "HDFCBANK")["enabled"] is False
+
+
+def test_every_call_goes_to_the_outcome_log_traded_or_not_but_a_dry_run_logs_nothing(patch_scan):
+    patch_scan({"NIFTY 50": call("NIFTY 50", "BUY PE", 90, 23100.0), "RELIANCE": {**call("RELIANCE", "WAIT", 32), "note": "x"},
+                "TCS": call("TCS", "BUY CE", 70)})
+
+    class Rec(MemStore):
+        def __init__(self):
+            super().__init__(); self.signals = []
+
+        async def record_signal(self, rec):
+            self.signals.append(rec)
+
+    store = Rec()
+    run(at.run_cycle(store, CFG, make_deps(lots={"NIFTY": 65}), now=MON_10AM))
+    got = {s["symbol"]: s for s in store.signals}
+    assert set(got) == {"NIFTY 50", "TCS"} and got["NIFTY 50"]["traded"] is True and got["TCS"]["traded"] is False
+    dry = Rec()
+    run(at.run_cycle(dry, CFG, make_deps(lots={"NIFTY": 65}), now=MON_10AM, dry=True))
+    assert dry.signals == []

@@ -31,6 +31,14 @@ export async function refreshPaperTrading() {
   } catch (e) { console.error('Paper trading fetch error:', e); }
 }
 
+/* ── download the whole history as CSV ── */
+document.addEventListener('click', e => {
+  if (!e.target.closest?.('#pt-download')) return;
+  const a = document.createElement('a');
+  a.href = `${CONFIG.PROXY_BASE}/api/paper/history.csv`; a.download = '';
+  document.body.appendChild(a); a.click(); a.remove();
+});
+
 /* ── trade history, one page at a time ── */
 let _histPage = 1, _histSize = 25;
 
