@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     opt_peak      NUMERIC(12, 2),
     opt_low       NUMERIC(12, 2),
     opt_exit      NUMERIC(12, 2),
+    news          TEXT,
     UNIQUE (symbol, candle_ts, call)
 )
 """
@@ -66,7 +67,7 @@ def signal_record(scan: dict, row: dict) -> Optional[dict]:
     return {"symbol": scan["sym"], "call": call, "candle_ts": int(scan["candle_ts"]), "confidence": int(scan.get("confidence") or 0),
             "score": scan.get("score"), "adx": scan.get("adx"), "price": scan.get("price"), "atr": atr, "votes": votes,
             "traded": row.get("action") in ("ORDER", "WOULD ORDER"), "action": row.get("action") or "", "detail": (row.get("detail") or "")[:300],
-            "position_id": row.get("position_id")}
+            "position_id": row.get("position_id"), "news": scan.get("news")}
 
 
 def compute_outcome(candles: list, candle_ts: int, call: str, atr: float) -> Optional[dict]:
@@ -143,13 +144,18 @@ def summarise(rows: list) -> dict:
     by_conf = {}
     for r in rows:
         by_conf.setdefault("85+" if (r.get("confidence") or 0) >= 85 else "below 85", []).append(r)
+    by_news = {}
+    for r in rows:
+        by_news.setdefault(r.get("news") or "none", []).append(r)
     return {"overall": tally(rows), "by_symbol": symbols, "by_confidence": {k: tally(v) for k, v in by_conf.items()},
+            "by_news": {k: tally(v) for k, v in by_news.items()},
             "suggestions": tips, "min_sample": MIN_SAMPLE}
 
 
 # ───────────── database ─────────────
 async def ensure_schema(conn) -> None:
     await conn.execute(SCHEMA)
+    await conn.execute("ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS news TEXT")
 
 
 async def record(pool, rec: dict) -> None:
@@ -157,14 +163,14 @@ async def record(pool, rec: dict) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO signal_outcomes (symbol, call, candle_ts, confidence, score, adx, price, atr, votes, traded, action, detail, position_id, opt_entry)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,NULL)
+                """INSERT INTO signal_outcomes (symbol, call, candle_ts, confidence, score, adx, price, atr, votes, traded, action, detail, position_id, news)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
                    ON CONFLICT (symbol, candle_ts, call) DO UPDATE SET
                      traded = signal_outcomes.traded OR EXCLUDED.traded,
                      action = CASE WHEN EXCLUDED.traded THEN EXCLUDED.action ELSE signal_outcomes.action END,
                      position_id = COALESCE(signal_outcomes.position_id, EXCLUDED.position_id)""",
                 rec["symbol"], rec["call"], rec["candle_ts"], rec["confidence"], rec["score"], rec["adx"], rec["price"], rec["atr"],
-                json.dumps(rec["votes"]), rec["traded"], rec["action"], rec["detail"], rec["position_id"])
+                json.dumps(rec["votes"]), rec["traded"], rec["action"], rec["detail"], rec["position_id"], rec.get("news"))
     except Exception as e:
         print(f"[WARN] outcome log skipped: {e}")
 

@@ -45,10 +45,12 @@ DEFAULTS = {
     "sl_pct": 0.30,                  # option stop: -30% of the premium paid
     "tp_pct": 0.30,                  # option target: +30%
     "lots": 1,
-    "nifty_max_per_day": 10,         # Nifty 50: orders a day (one open at a time)
+    "nifty_max_per_day": 3,          # Nifty 50: orders a day (one open at a time); 10 let it re-buy a failing move 3 times in 80 minutes
     "stock_max_per_day": 1,          # every other underlying: orders a day each
     "product": "INTRADAY",           # INTRADAY (squared off at 15:15 IST) or CARRYFORWARD (kept until stop/target); stocks default to same-day
-    "nifty_qty": 130,                # Nifty options are always bought in this quantity (2 lots of 65)
+    "nifty_qty": 130,                # Nifty quantity when no premium budget is set (2 lots of 65)
+    "premium_per_trade": 15000,      # Rs of premium per auto trade, rounded down to whole lots (at least 1); 0 = use lots / nifty_qty
+    "sl_cooldown_min": 60,           # after a stop-loss, no new auto trade on the same underlying for this many minutes (0 = off)
     "max_same_direction": 2,         # open auto positions allowed to bet the same way (all CE or all PE)
     "max_stops_per_day": 2,          # stop-losses today after which no new auto trade is opened (0 = no limit)
     "nifty_agree": True,             # a stock call must agree with the Nifty's own signal
@@ -62,12 +64,13 @@ DEFAULTS = {
 # Built-in per-underlying defaults from reports/reversal_study.md (2 years of 15m data, modelled options): same-day square-off cut the average
 # loss on stocks from -379 to -54 Rs/trade; Nifty 50 was the only index with a steady positive result (kept to stop/target); Bank Nifty and
 # the bank stocks lost money on both halves of the period, so they are alert-only until the user switches them on in Settings.
-DEFAULT_SYMBOLS = {"NIFTY": {"product": "CARRYFORWARD"},
-                   "BANKNIFTY": {"enabled": False}, "HDFCBANK": {"enabled": False}, "ICICIBANK": {"enabled": False}, "SBIN": {"enabled": False}}
+# Nifty is INTRADAY too since 13 Nov: in paper trading 4 of 6 positions carried overnight lost at the 09:15 gap, some beyond the stop.
+DEFAULT_SYMBOLS = {"BANKNIFTY": {"enabled": False}, "HDFCBANK": {"enabled": False}, "ICICIBANK": {"enabled": False}, "SBIN": {"enabled": False}}
 
 # What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
 USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols",
-             "nifty_max_per_day", "stock_max_per_day", "product", "max_same_direction", "max_stops_per_day", "nifty_agree"}
+             "nifty_max_per_day", "stock_max_per_day", "product", "max_same_direction", "max_stops_per_day", "nifty_agree",
+             "premium_per_trade", "sl_cooldown_min"}
 PRODUCTS = ("INTRADAY", "CARRYFORWARD")
 SQUAREOFF_MIN = 15 * 60 + 15      # INTRADAY auto positions are closed from 15:15 IST
 # The first version of the settings row saved the WHOLE config (including old stop/target values), so when it is migrated
@@ -84,7 +87,24 @@ _BULLISH = ["rally", "rise", "gain", "surge", "strong", "buy", "profit", "upgrad
             "recovery", "optimism"]
 _BEARISH = ["crash", "fall", "drop", "decline", "sell-off", "selloff", "weak", "loss", "ban", "penalty", "raid",
             "inflation", "rate hike", "recession", "downgrade", "slump", "plunge", "tanking", "bloodbath",
-            "warning", "default", "fear", "concern", "risk", "uncertainty", "profit booking"]
+            "warning", "default", "fear", "uncertainty", "profit booking"]
+# Same lists and matching as frontend/js/news.js. Whole words only (with plural / -ed / -ing forms), so "ban" no longer
+# matches "bank". "risk" and "concern" were dropped: they appear in ordinary reporting and tilted neutral headlines bearish.
+
+
+def _kw_pattern(words: list):
+    parts = []
+    for w in words:
+        if w.endswith("y"):
+            parts.append(re.escape(w[:-1]) + "(?:y|ies|ied|ying)")
+        elif w.endswith("e"):
+            parts.append(re.escape(w[:-1]) + "(?:e|es|ed|ing)")
+        else:
+            parts.append(re.escape(w) + "(?:s|es|ed|ing|ped|ping|ned|ning)?")
+    return re.compile(r"\b(?:" + "|".join(parts) + r")\b")
+
+
+_BULL_RE, _BEAR_RE = _kw_pattern(_BULLISH), _kw_pattern(_BEARISH)
 
 
 # ───────────── pure helpers ─────────────
@@ -124,9 +144,9 @@ def news_label(headlines: list) -> Optional[str]:
     bull = bear = 0
     for h in headlines:
         t = (h.get("title") or "").lower()
-        if any(k in t for k in _BULLISH):
+        if _BULL_RE.search(t):
             bull += 1
-        if any(k in t for k in _BEARISH):
+        if _BEAR_RE.search(t):
             bear += 1
     score = (bull - bear) / max(bull + bear, 1)
     return "BULLISH" if score > 0.2 else "BEARISH" if score < -0.2 else "NEUTRAL"
@@ -180,7 +200,8 @@ def direction_of_contract(symbol: str) -> int:
 
 
 def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0,
-           by_und: Optional[dict] = None, nifty_score: Optional[float] = None, stops_today: int = 0) -> tuple:
+           by_und: Optional[dict] = None, nifty_score: Optional[float] = None, stops_today: int = 0,
+           last_stops: Optional[dict] = None, events: Optional[dict] = None) -> tuple:
     """Return (take_it, reason). The first failing rule is the reason.
     `orders_today` is the number of auto orders today for stocks other than Nifty (the shared daily cap);
     `by_und` is {underlying: orders today}, for the per-underlying daily limit."""
@@ -209,6 +230,15 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
         return False, f"{und} already had {done} auto order{'s' if done != 1 else ''} today (limit {sp['max_per_day']} a day, see Settings)"
     if acted_on_candle:
         return False, "already acted on this candle"
+    ev = (events or {}).get(und)
+    if ev:
+        return False, f"{und} has a scheduled event today ({ev}): results-day moves hit stops, no auto entry"
+    cool = int(cfg.get("sl_cooldown_min") or 0)
+    last = (last_stops or {}).get(und)
+    if cool and last is not None:
+        gone = (now - last).total_seconds() / 60
+        if 0 <= gone < cool:
+            return False, f"{und} hit a stop-loss {gone:.0f} min ago: waiting {cool} min before re-entering"
     direction = 1 if result.get("call") == "BUY CE" else -1
     cap = int(cfg.get("max_stops_per_day") or 0)
     if cap and stops_today >= cap:
@@ -231,6 +261,7 @@ class Deps:
     get_contracts: Callable[[str], list]                           # underlying -> option contracts
     get_lot_size: Callable[[str], Optional[int]]
     fetch_ltp: Callable[[str], Awaitable[Optional[float]]]
+    fetch_events: Optional[Callable[[dt.date], Awaitable[dict]]] = None   # date -> {underlying: purpose} (board meetings, results)
 
 
 class Store:
@@ -242,6 +273,8 @@ class Store:
         return {}
     async def stops_today(self, day: dt.date) -> int:
         return 0
+    async def last_stops(self, day: dt.date) -> dict:
+        return {}
     async def place(self, symbol: str, qty: int, price: float, sl: float, tp: float) -> tuple: raise NotImplementedError
     async def log(self, row: dict) -> None: raise NotImplementedError
     async def save_last_scan(self, scan: dict) -> None: return None
@@ -282,6 +315,13 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
     decisions = []
     by_und = dict(await store.orders_today_by_und(now.date()))
     stops = await store.stops_today(now.date())
+    last_stops = await store.last_stops(now.date())
+    events = {}
+    if deps.fetch_events:
+        try:
+            events = await deps.fetch_events(now.date()) or {}
+        except Exception as e:                    # the calendar is a filter: without it, trade as before
+            print(f"[WARN] event calendar unavailable: {e}")
     nifty_score = next((r.get("score") for r in results if underlying_of(r["sym"]) == "NIFTY" and r.get("ok", True) and r.get("score") is not None), None)
     previewed = []                      # a dry run counts what it WOULD open, so the position limit still applies
     # strongest calls first, so the position limit goes to the best ones
@@ -294,7 +334,7 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
             others = sum(n for u, n in by_und.items() if u != "NIFTY")
-            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und, nifty_score, stops)
+            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und, nifty_score, stops, last_stops, events)
             row["detail"] = ""
             if not ok:
                 row["detail"] = why
@@ -357,12 +397,16 @@ def symbol_params(cfg: dict, und: Optional[str]) -> dict:
             "max_per_day": int(ov.get("max_per_day") or default_cap), "product": product}
 
 
-def order_qty(und: str, lot: int, cfg: dict) -> int:
-    """Units to buy: the symbol's own lots if set in Settings; else Nifty is always cfg['nifty_qty'] (rounded to whole lots,
-    at least one); everything else is cfg['lots'] lots."""
+def order_qty(und: str, lot: int, cfg: dict, premium: Optional[float] = None) -> int:
+    """Units to buy: the symbol's own lots if set in Settings; else, with a premium budget, as many whole lots as fit in
+    cfg['premium_per_trade'] (at least one), so every trade risks about the same rupees; else Nifty is cfg['nifty_qty']
+    and everything else cfg['lots'] lots."""
     own = symbol_params(cfg, und)["lots"]
     if own:
         return int(own) * lot
+    budget = float(cfg.get("premium_per_trade") or 0)
+    if budget > 0 and premium and premium > 0:
+        return max(1, int(budget // (premium * lot))) * lot
     if und == "NIFTY" and cfg.get("nifty_qty"):
         return max(1, round(cfg["nifty_qty"] / lot)) * lot
     return lot * cfg["lots"]
@@ -386,7 +430,7 @@ async def _order(store: Store, cfg: dict, deps: Deps, r: dict, now: dt.datetime,
             await asyncio.sleep(LTP_RETRY_SLEEP)
     if not ltp or ltp <= 0:
         return {"action": "SKIP", "detail": f"no live price for {contract['symbol']}"}
-    qty = order_qty(und, lot, cfg)
+    qty = order_qty(und, lot, cfg, ltp)
     sp = symbol_params(cfg, und)
     sl, tp = round(ltp * (1 - sp["sl_pct"]), 2), round(ltp * (1 + sp["tp_pct"]), 2)
     if dry:
@@ -428,6 +472,20 @@ class PgStore(Store):
         async with self.pool.acquire() as conn:
             return int(await conn.fetchval(
                 "SELECT COUNT(*) FROM history WHERE source = 'auto' AND reason ILIKE 'SL%' AND (exit_time AT TIME ZONE 'Asia/Kolkata')::date = $1", day) or 0)
+
+    async def last_stops(self, day: dt.date) -> dict:
+        """{underlying: time of its latest auto stop-loss today}, for the re-entry cool-down."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, exit_time FROM history WHERE source = 'auto' AND reason ILIKE 'SL%' "
+                "AND (exit_time AT TIME ZONE 'Asia/Kolkata')::date = $1", day)
+        out: dict = {}
+        for r in rows:
+            und = underlying_from_contract(r["symbol"]) or str(r["symbol"]).upper()
+            t = r["exit_time"].astimezone(IST)
+            if und not in out or t > out[und]:
+                out[und] = t
+        return out
 
     async def orders_today_by_und(self, day: dt.date) -> dict:
         async with self.pool.acquire() as conn:

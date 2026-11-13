@@ -136,3 +136,12 @@ the resolver scores it on the underlying: +1 ATR before -1 ATR = worked / revers
 opens, the real option premium path (entry, peak, low, exit) is kept from the SL/TP watcher. The scan loop records calls even when auto-trading is off.
 `GET /api/outcomes/summary` and `/recent`; Paper page shows a per-symbol table. Suggestions (alert-only / keep) need 50+ decided calls and are advice only; the app never
 changes settings by itself. The Live nav button is hidden (the page and #/live still exist for the broker redirect).
+
+## Rules from the paper-trade review (13 Nov 2026)
+- Sizing: `premium_per_trade` (default Rs 15,000) buys as many whole lots as fit, at least one; a symbol's own lots still win.
+- Nifty is INTRADAY like the stocks; `nifty_max_per_day` 3; `sl_cooldown_min` 60 blocks re-entry on an underlying after its stop-loss.
+- The paper watcher does nothing outside 09:15-15:30 IST (no stop/target/fill on post-close prices).
+- `history.entry_time` is kept; the CSV has entry time and minutes held.
+- News vote: the stock's own Google News headlines from the last 24 hours only (`symbol_only=True`), whole-word keyword
+  matching shared by `autotrader.news_label` and `frontend/js/news.js` (tests in both). The news label is stored in the outcome log.
+- NSE event calendar (`nse_client.get_event_calendar`, cached 6h): no auto entry on a stock's board-meeting / results day.

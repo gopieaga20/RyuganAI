@@ -45,7 +45,7 @@ except ImportError:
     def load_master_contract(): pass
     _angel_broker = None
 
-from nse_client import get_fo_underlyings
+from nse_client import get_fo_underlyings, get_event_calendar, events_on
 from db import ResilientPool
 import autotrader
 import live_broker
@@ -109,8 +109,16 @@ async def _autotrade_deps() -> "autotrader.Deps":
         return autotrader.payload_to_candles(json.loads(resp.body))
 
     async def headlines(key):
-        data = await get_news(q=key, limit=8)
+        data = await get_news(q=key, limit=8, symbol_only=True)
         return data.get("headlines", [])
+
+    async def events(day):
+        now = time.time()
+        if now - _event_cache["at"] > 6 * 3600 or not _event_cache["rows"]:
+            rows = await get_event_calendar()
+            if rows:
+                _event_cache.update(at=now, rows=rows)
+        return events_on(_event_cache["rows"], day)
 
     def contracts(und):
         return get_option_contracts(und)
@@ -119,10 +127,11 @@ async def _autotrade_deps() -> "autotrader.Deps":
         return get_lot_sizes().get(und)
 
     return autotrader.Deps(fetch_candles=candles, fetch_headlines=headlines, get_contracts=contracts,
-                           get_lot_size=lot, fetch_ltp=_fetch_ltp)
+                           get_lot_size=lot, fetch_ltp=_fetch_ltp, fetch_events=events)
 
 
 _autotrade_state = {"last_run": None, "next_run": None, "running": False}
+_event_cache = {"at": 0.0, "rows": []}             # NSE event calendar, refreshed every 6 hours
 
 
 async def _run_autotrade_cycle(pool, dry=False, now=None):
@@ -307,10 +316,10 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
             charges = CHARGE_PER_LEG * 2
             await conn.execute(
                 """INSERT INTO history
-                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
+                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source, entry_time)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
                 pos["symbol"], pos["type"], pos["qty"],
-                pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"]
+                pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"], pos["entry_time"]
             )
     await outcomes.track_premium(pool, position_id, exit_price, closed_at=time.time())
     return pnl
@@ -379,6 +388,12 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
     last_error = None
     while True:
         try:
+            if not autotrader.market_open(autotrader.now_ist()):
+                # NSE is shut: no paper stop/target/fill may use a price a real order could not get (a 'Target Hit' at 15:32 did)
+                if _angel_broker:
+                    _angel_broker.refresh_master_if_stale()
+                await asyncio.sleep(_SL_TP_POLL_SECONDS)
+                continue
             async with pool.acquire() as conn:
                 positions = await conn.fetch("SELECT * FROM positions")
             for pos in positions:
@@ -605,6 +620,7 @@ async def _ensure_schema(pool: asyncpg.Pool):
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS margin NUMERIC(14,2)",
             "ALTER TABLE positions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'",
             "ALTER TABLE history   ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'",
+            "ALTER TABLE history   ADD COLUMN IF NOT EXISTS entry_time TIMESTAMPTZ",
         ]:
             await conn.execute(stmt)
         # Seed default portfolio row
@@ -747,11 +763,14 @@ async def download_history(request: Request):
 
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Exit time (IST)", "Symbol", "Type", "Qty", "Entry price", "Exit price", "P&L (Rs)", "Charges (Rs)", "Net P&L (Rs)", "Reason", "Source"])
+    w.writerow(["Entry time (IST)", "Exit time (IST)", "Held (min)", "Symbol", "Type", "Qty", "Entry price", "Exit price", "P&L (Rs)", "Charges (Rs)", "Net P&L (Rs)", "Reason", "Source"])
     for h in rows:
         pnl, ch = float(h["pnl"]), float(h["charges"] or 0)
         t = h["exit_time"].astimezone(ist).strftime("%Y-%m-%d %H:%M:%S") if h["exit_time"] else ""
-        w.writerow([t, safe(h["symbol"]), h["type"], h["qty"], float(h["entry_price"]), float(h["exit_price"]), round(pnl, 2), round(ch, 2),
+        et = h["entry_time"]
+        t0 = et.astimezone(ist).strftime("%Y-%m-%d %H:%M:%S") if et else ""
+        held = round((h["exit_time"] - et).total_seconds() / 60) if (et and h["exit_time"]) else ""
+        w.writerow([t0, t, held, safe(h["symbol"]), h["type"], h["qty"], float(h["entry_price"]), float(h["exit_price"]), round(pnl, 2), round(ch, 2),
                     round(pnl - ch, 2), safe(h["reason"]), h["source"]])
     name = "paper-trade-history-" + datetime.datetime.now(ist).strftime("%Y%m%d") + ".csv"
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}"'})
@@ -872,6 +891,8 @@ class SymbolSetting(BaseModel):
     enabled: Optional[bool] = None
     max_per_day: Optional[int] = Field(default=None, ge=1, le=50)
     product: Optional[str] = Field(default=None, pattern="^(INTRADAY|CARRYFORWARD)$")
+    premium_per_trade: Optional[int] = Field(default=None, ge=0, le=500000)
+    sl_cooldown_min: Optional[int] = Field(default=None, ge=0, le=375)
 
 
 class AutoTradeSettings(BaseModel):
@@ -911,7 +932,8 @@ def _settings_view(cfg: dict) -> dict:
         })
     return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe",
                                                               "nifty_max_per_day", "stock_max_per_day", "product",
-                                                              "max_same_direction", "max_stops_per_day", "nifty_agree")},
+                                                              "max_same_direction", "max_stops_per_day", "nifty_agree",
+                                                              "premium_per_trade", "sl_cooldown_min")},
             "symbols": rows}
 
 
@@ -987,6 +1009,15 @@ async def autotrade_settings(req: AutoTradeSettings, request: Request):
         patch["symbols"] = autotrader.clean_symbols({k: {f: x for f, x in v.items() if x is not None} for k, v in patch["symbols"].items()})
     cfg = await autotrader.save_settings(_get_pool(request), patch)
     return _settings_view(cfg)
+
+
+@app.get("/api/events/today")
+async def events_today(request: Request):
+    """Board meetings / results today for the symbols in the auto-trade list (from NSE's event calendar)."""
+    cfg = await autotrader.load_settings(_get_pool(request))
+    ev = await (await _autotrade_deps()).fetch_events(autotrader.now_ist().date())
+    unds = {autotrader.underlying_of(s) for s in cfg["universe"]}
+    return {"events": {u: p for u, p in ev.items() if u in unds}, "all_count": len(ev)}
 
 
 @app.get("/api/outcomes/summary")
@@ -2299,7 +2330,7 @@ _NEWS_TTL = 900                            # 15 minutes in seconds
 
 _RSS_FEEDS = {
     "default": "https://news.google.com/rss/search?q=Indian+Stock+Market&hl=en-IN&gl=IN&ceid=IN:en",
-    "symbol":  "https://news.google.com/rss/search?q={sym}+stock+India&hl=en-IN&gl=IN&ceid=IN:en",
+    "symbol":  "https://news.google.com/rss/search?q={sym}+stock+India+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     "market":  "https://news.google.com/rss/search?q=NSE+BSE+Nifty+Sensex&hl=en-IN&gl=IN&ceid=IN:en",
 }
 
@@ -2332,8 +2363,22 @@ def _parse_rss(xml_text: str, limit: int) -> list[dict]:
         pass
     return items
 
+def _fresh(items: list, hours: float = 24) -> list:
+    """Headlines published within the last `hours` (undated ones are dropped)."""
+    from email.utils import parsedate_to_datetime
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    out = []
+    for h in items:
+        try:
+            if parsedate_to_datetime(h.get("published") or "") >= cutoff:
+                out.append(h)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 @app.get("/api/news")
-async def get_news(q: str = "NIFTY", limit: int = 10):
+async def get_news(q: str = "NIFTY", limit: int = 10, symbol_only: bool = False):
     """
     Fetch latest financial headlines from Yahoo Finance RSS.
 
@@ -2345,7 +2390,7 @@ async def get_news(q: str = "NIFTY", limit: int = 10):
         { headlines: [{title, link, published}], sentiment_hint: str, cached: bool }
     """
     limit = max(1, min(20, limit))
-    cache_key = f"{q.upper()}:{limit}"
+    cache_key = f"{q.upper()}:{limit}:{int(symbol_only)}"
     now = time.time()
 
     # Serve from cache if fresh
@@ -2355,11 +2400,8 @@ async def get_news(q: str = "NIFTY", limit: int = 10):
             return {**entry["data"], "cached": True}
 
     q_sym = _sym_to_query(q)
-    urls = [
-        _RSS_FEEDS["symbol"].format(sym=q_sym),
-        _RSS_FEEDS["market"],
-        _RSS_FEEDS["default"],
-    ]
+    # symbol_only (the auto-trader's news vote): that stock's own headlines from the last 24 hours, never topped up with market news
+    urls = [_RSS_FEEDS["symbol"].format(sym=q_sym)] + ([] if symbol_only else [_RSS_FEEDS["market"], _RSS_FEEDS["default"]])
 
     headlines: list[dict] = []
     headers = {
@@ -2374,7 +2416,7 @@ async def get_news(q: str = "NIFTY", limit: int = 10):
             try:
                 r = await client.get(url, headers=headers, follow_redirects=True)
                 if r.status_code == 200:
-                    parsed = _parse_rss(r.text, limit - len(headlines))
+                    parsed = _fresh(_parse_rss(r.text, 100))[:limit - len(headlines)] if symbol_only else _parse_rss(r.text, limit - len(headlines))
                     # Deduplicate by title
                     seen = {h["title"] for h in headlines}
                     for item in parsed:

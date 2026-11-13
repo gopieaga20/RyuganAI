@@ -29,6 +29,37 @@ _FALLBACK_UNDERLYINGS = [
 ]
 
 
+async def get_event_calendar() -> list:
+    """NSE's public corporate event calendar (board meetings: financial results, dividends, fund raising...), about the next
+    two weeks. Returns [{symbol, purpose, date: 'DD-Mon-YYYY'}], or [] when NSE is unreachable (callers treat that as 'no events')."""
+    try:
+        async with httpx.AsyncClient(headers=_BASE_HEADERS, timeout=15.0, follow_redirects=True) as client:
+            await client.get("https://www.nseindia.com/")
+            r = await client.get("https://www.nseindia.com/api/event-calendar?index=equities")
+            if r.status_code != 200:
+                return []
+            data = r.json()
+        return [{"symbol": str(x.get("symbol") or "").upper(), "purpose": x.get("purpose") or "", "date": x.get("date") or ""}
+                for x in (data if isinstance(data, list) else []) if x.get("symbol")]
+    except Exception as e:
+        print(f"[WARN] NSE event calendar fetch failed: {e}")
+        return []
+
+
+def events_on(calendar: list, day) -> dict:
+    """{symbol: purpose} for events dated `day` (a datetime.date)."""
+    import datetime as _dt
+    out = {}
+    for x in calendar:
+        try:
+            d = _dt.datetime.strptime(x["date"], "%d-%b-%Y").date()
+        except (ValueError, KeyError, TypeError):
+            continue
+        if d == day:
+            out[x["symbol"]] = x["purpose"] or "board meeting"
+    return out
+
+
 async def get_fo_underlyings():
     """Fetch the full list of F&O underlyings (indices + stocks) from NSE.
     Returns [{symbol, name, type}, ...], or the static fallback list on failure."""

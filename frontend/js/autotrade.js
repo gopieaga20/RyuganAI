@@ -131,6 +131,7 @@ function applySettingsView(d) {
   const s = d.settings;
   $('as-conf').value = s.min_confidence; $('as-maxpos').value = s.max_positions; $('as-maxday').value = s.max_trades_per_day;
   $('as-sl').value = pct(s.sl_pct); $('as-tp').value = pct(s.tp_pct); $('as-lots').value = s.lots;
+  $('as-budget').value = s.premium_per_trade; $('as-cooldown').value = s.sl_cooldown_min;
   $('as-samedir').value = s.max_same_direction; $('as-stopsday').value = s.max_stops_per_day; $('as-niftyagree').checked = !!s.nifty_agree;
   $('as-nifty-day').value = s.nifty_max_per_day; $('as-stock-day').value = s.stock_max_per_day; $('as-product').value = s.product;
   settingsRows = d.symbols.map(r => ({ ...r, value: { ...r.value } }));
@@ -171,6 +172,7 @@ async function saveSettings() {
     const d = await post('/api/autotrade/settings', {
       min_confidence: Math.round(num('as-conf', 85)), max_positions: Math.round(num('as-maxpos', 5)), max_trades_per_day: Math.round(num('as-maxday', 5)),
       sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_same_direction: Math.max(0, Math.round(num('as-samedir', 2))), max_stops_per_day: Math.max(0, Math.round(num('as-stopsday', 2))),
+      premium_per_trade: Math.max(0, Math.round(num('as-budget', 15000))), sl_cooldown_min: Math.max(0, Math.round(num('as-cooldown', 60))),
       nifty_agree: $('as-niftyagree').checked, nifty_max_per_day: g.nifty, stock_max_per_day: g.stock, product: g.product,
       universe: settingsRows.map(r => r.symbol), symbols,
     });
@@ -185,7 +187,8 @@ async function resetSettings() {
   readRows();
   try {
     applySettingsView(await post('/api/autotrade/settings', {
-      min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 10, stock_max_per_day: 1,
+      min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 3, stock_max_per_day: 1,
+      premium_per_trade: 15000, sl_cooldown_min: 60,
       product: 'INTRADAY', max_same_direction: 2, max_stops_per_day: 2, nifty_agree: true, symbols: {}, universe: settingsRows.map(r => r.symbol),
     }));
     $('as-msg').style.color = 'var(--green)'; $('as-msg').textContent = 'Reset to defaults.';

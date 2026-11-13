@@ -12,17 +12,25 @@ export const NewsFilter = (() => {
   const _BEARISH_KW = ['crash', 'fall', 'drop', 'decline', 'sell-off', 'selloff',
     'weak', 'loss', 'ban', 'penalty', 'raid', 'inflation', 'rate hike', 'recession',
     'downgrade', 'slump', 'plunge', 'tanking', 'bloodbath', 'warning', 'default',
-    'fear', 'concern', 'risk', 'uncertainty', 'profit booking'];
+    'fear', 'uncertainty', 'profit booking'];
   const _BULLISH_KW = ['rally', 'rise', 'gain', 'surge', 'strong', 'buy', 'profit',
     'upgrade', 'record', 'beat', 'growth', 'positive', 'expansion', 'bullish',
     'outperform', 'breakout', 'momentum', 'inflow', 'rebound', 'recovery', 'optimism'];
+  // Whole words only, with plural / -ed / -ing forms (same as backend/autotrader.py news_label), so "ban" does not match "bank".
+  const _kwRe = words => new RegExp('\\b(?:' + words.map(w => {
+    const e = s => s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+    if (w.endsWith('y')) return e(w.slice(0, -1)) + '(?:y|ies|ied|ying)';
+    if (w.endsWith('e')) return e(w.slice(0, -1)) + '(?:e|es|ed|ing)';
+    return e(w) + '(?:s|es|ed|ing|ped|ping|ned|ning)?';
+  }).join('|') + ')\\b');
+  const _BULL_RE = _kwRe(_BULLISH_KW), _BEAR_RE = _kwRe(_BEARISH_KW);
 
   function _score(headlines) {
     let bull = 0, bear = 0;
     for (const h of headlines) {
       const t = (h.title || '').toLowerCase();
-      for (const kw of _BULLISH_KW) if (t.includes(kw)) { bull++; break; }
-      for (const kw of _BEARISH_KW) if (t.includes(kw)) { bear++; break; }
+      if (_BULL_RE.test(t)) bull++;
+      if (_BEAR_RE.test(t)) bear++;
     }
     const total = Math.max(bull + bear, 1);
     const score = (bull - bear) / total;
@@ -72,8 +80,8 @@ export const NewsFilter = (() => {
     let html = `<div class="news-feed-header"><span>📰 LIVE NEWS</span><span class="nf-sentiment ${sentClass}">${sentIcon} ${sentLabel}</span></div>`;
     for (const h of headlines.slice(0, 5)) {
       const t = (h.title || '').toLowerCase();
-      const isBull = _BULLISH_KW.some(k => t.includes(k));
-      const isBear = _BEARISH_KW.some(k => t.includes(k));
+      const isBull = _BULL_RE.test(t);
+      const isBear = _BEAR_RE.test(t);
       const dotCls = isBull ? 'nf-bull' : isBear ? 'nf-bear' : 'nf-neut';
       const safeTitle = (h.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const href = h.link ? ` href="${h.link}" target="_blank" rel="noopener"` : '';
@@ -97,7 +105,7 @@ export const NewsFilter = (() => {
     renderFeed(entry.headlines, entry.sentiment, 'nifty-news-feed');
   }, TTL);
 
-  return { fetch, renderFeed, sentimentBadgeHtml };
+  return { fetch, renderFeed, sentimentBadgeHtml, score: _score };
 })();
 
 /* ═══════════════════════════════════════════

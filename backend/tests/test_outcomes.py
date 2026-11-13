@@ -80,3 +80,11 @@ def test_summary_suggests_alert_only_for_a_clearly_bad_symbol_and_keep_for_a_goo
     advice = {t["symbol"]: t["advice"] for t in s["suggestions"]}
     assert advice == {"SBIN": "alert-only", "NIFTY 50": "keep"}          # ITC is a coin flip: no advice
     assert s["overall"]["resolved"] == 195
+
+
+def test_event_calendar_is_read_for_one_day():
+    from nse_client import events_on
+    cal = [{"symbol": "TCS", "purpose": "Financial Results", "date": "14-Nov-2026"},
+           {"symbol": "ITC", "purpose": "", "date": "15-Nov-2026"}, {"symbol": "BAD", "purpose": "x", "date": "soon"}]
+    assert events_on(cal, dt.date(2026, 11, 14)) == {"TCS": "Financial Results"}
+    assert events_on(cal, dt.date(2026, 11, 15)) == {"ITC": "board meeting"}

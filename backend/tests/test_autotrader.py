@@ -368,9 +368,9 @@ def test_nifty_can_trade_many_times_a_day_but_only_one_position_at_a_time():
     ok, why = at.decide(NIFTY_CALL(), CFG, held, MON_10AM, by_und={"NIFTY": 1})
     assert not ok and "waiting for it to hit its target or stop" in why
     assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 1})[0]               # previous one closed: next is allowed
-    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 9})[0]               # still under the Nifty limit of 10
-    ok, why = at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 10})
-    assert not ok and "limit 10 a day" in why
+    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 2})[0]               # still under the Nifty limit of 3
+    ok, why = at.decide(NIFTY_CALL(), CFG, [], MON_10AM, by_und={"NIFTY": 3})
+    assert not ok and "limit 3 a day" in why
 
 
 def test_nifty_is_not_stopped_by_the_shared_stock_cap():
@@ -489,7 +489,7 @@ def test_the_new_settings_are_saved_and_have_safe_defaults():
 
 
 def test_built_in_defaults_from_the_reversal_study():
-    assert at.symbol_params(CFG, "NIFTY")["product"] == "CARRYFORWARD"
+    assert at.symbol_params(CFG, "NIFTY")["product"] == "INTRADAY"          # overnight gaps cost more than carrying earned
     for und in ("BANKNIFTY", "HDFCBANK", "ICICIBANK", "SBIN"):
         assert at.symbol_params(CFG, und)["enabled"] is False
     assert at.symbol_params(CFG, "TCS")["enabled"] is True
@@ -516,3 +516,56 @@ def test_every_call_goes_to_the_outcome_log_traded_or_not_but_a_dry_run_logs_not
     dry = Rec()
     run(at.run_cycle(dry, CFG, make_deps(lots={"NIFTY": 65}), now=MON_10AM, dry=True))
     assert dry.signals == []
+
+
+# ───────────── rules from the paper-trade review (13 Nov) ─────────────
+def test_every_trade_gets_about_the_same_premium():
+    cfg = {**at.DEFAULTS, "premium_per_trade": 15000}
+    assert at.order_qty("NIFTY", 65, cfg, premium=250) == 65              # 2 lots would be 32,500: one lot fits
+    assert at.order_qty("ITC", 1725, cfg, premium=4.65) == 1725           # 1 lot is 8,021: 2 would be 16,043, over budget
+    assert at.order_qty("RELIANCE", 500, cfg, premium=12) == 1000         # 2 lots = 12,000
+    assert at.order_qty("BANKNIFTY", 30, cfg, premium=700) == 30          # one lot is over the budget: still one lot
+    assert at.order_qty("TCS", 175, {**cfg, "symbols": {"TCS": {"lots": 3}}}, premium=50) == 525   # the stock's own lots win
+    assert at.order_qty("NIFTY", 65, {**cfg, "premium_per_trade": 0}, premium=250) == 130          # budget off: old rule
+
+
+def test_no_reentry_on_the_same_underlying_soon_after_a_stop():
+    stop = {"NIFTY": MON_10AM - dt.timedelta(minutes=20)}
+    ok, why = at.decide(NIFTY_CALL(), CFG, [], MON_10AM, last_stops=stop)
+    assert not ok and "20 min ago" in why
+    assert at.decide(NIFTY_CALL(), CFG, [], MON_10AM, last_stops={"NIFTY": MON_10AM - dt.timedelta(minutes=61)})[0]
+    assert at.decide(call("TCS"), CFG, [], MON_10AM, last_stops=stop)[0]                     # other underlyings are not affected
+    assert at.decide(NIFTY_CALL(), {**CFG, "sl_cooldown_min": 0}, [], MON_10AM, last_stops=stop)[0]
+
+
+def test_no_auto_entry_on_a_results_day():
+    ok, why = at.decide(call("TCS"), CFG, [], MON_10AM, events={"TCS": "Financial Results"})
+    assert not ok and "Financial Results" in why
+    assert at.decide(call("RELIANCE"), CFG, [], MON_10AM, events={"TCS": "Financial Results"})[0]
+
+
+def test_a_cycle_uses_the_event_calendar_and_survives_without_it(patch_scan):
+    patch_scan({"TCS": call("TCS", "BUY CE", 90)})
+
+    async def events(day):
+        return {"TCS": "Financial Results"}
+
+    async def broken(day):
+        raise RuntimeError("NSE down")
+    deps = make_deps()
+    deps.fetch_events = events
+    out = run(at.run_cycle(MemStore(), {**CFG, "universe": ["TCS"]}, deps, now=MON_10AM))
+    assert out[0]["action"] == "SKIP" and "scheduled event" in out[0]["detail"]
+    deps.fetch_events = broken
+    out = run(at.run_cycle(MemStore(), {**CFG, "universe": ["TCS"]}, deps, now=MON_10AM))
+    assert out[0]["action"] == "ORDER"
+
+
+def test_news_keywords_match_whole_words_only():
+    label = lambda *t: at.news_label([{"title": x} for x in t])
+    assert label("HDFC Bank opens new branch", "SBI bank results on Friday") == "NEUTRAL"      # "ban" inside "bank"
+    assert label("Infosys enterprise deal") == "NEUTRAL"                                       # "rise" inside "enterprise"
+    assert label("Nifty against the trend") == "NEUTRAL"                                       # "gain" inside "against"
+    assert label("Markets weigh risk of rate cut", "Analysts voice concern") == "NEUTRAL"      # dropped words
+    assert label("Reliance shares rallied 3%", "TCS gains after deal") == "BULLISH"            # inflected forms still count
+    assert label("Govt bans exports", "Stock dropped 4%", "Shares falling") == "BEARISH"
