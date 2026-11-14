@@ -43,6 +43,27 @@
     </div>
   </div>
 
+  <!-- LOGIN / REGISTER (shown by js/auth.js until a session exists) -->
+  <div class="auth-gate" id="auth-gate" style="display:none">
+    <div class="auth-card">
+      <img class="auth-logo" src="assets/logo-shell.svg" alt="R-Yugan Pro" />
+      <div class="auth-brand">R-YUGAN<b>PRO</b></div>
+      <div class="auth-tabs" id="auth-tabs">
+        <button type="button" class="auth-tab active" data-mode="login">Sign in</button>
+        <button type="button" class="auth-tab" data-mode="register" id="auth-tab-register">Create account</button>
+      </div>
+      <p class="auth-note" id="auth-note"></p>
+      <form id="auth-form" autocomplete="on" novalidate>
+        <label class="auth-field" id="auth-name-wrap" style="display:none">Name<input id="auth-name" type="text" maxlength="80" autocomplete="name" placeholder="Your name" /></label>
+        <label class="auth-field">Email<input id="auth-email" type="email" maxlength="254" autocomplete="username" placeholder="you@example.com" required /></label>
+        <label class="auth-field">Password<input id="auth-password" type="password" maxlength="200" autocomplete="current-password" required /></label>
+        <div class="auth-hint" id="auth-hint" style="display:none">At least 10 characters.</div>
+        <div class="auth-err" id="auth-err" role="alert"></div>
+        <button type="submit" class="btn btn-primary auth-submit" id="auth-submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+
   <div class="app">
   <!-- ═══════════ TOP BAR ═══════════ -->
   <header class="topbar">
@@ -88,6 +109,17 @@
         <div><div id="mstatus-txt">Checking...</div><div class="sb-clock" id="clock">--:--:-- IST</div></div>
       </div>
       <button class="tb-icon" id="theme-toggle" title="Switch dark / light theme" onclick="toggleTheme()">◐</button>
+      <div class="pf-wrap">
+        <button class="tb-icon pf-avatar" id="profile-btn" title="Profile and settings" aria-haspopup="menu" aria-expanded="false">?</button>
+        <div class="pf-menu" id="profile-menu" role="menu" style="display:none">
+          <div class="pf-menu-head"><b id="pf-menu-name">-</b><span id="pf-menu-email">-</span></div>
+          <button type="button" role="menuitem" data-pf="account">Account settings</button>
+          <button type="button" role="menuitem" data-pf="strategies">Strategy settings</button>
+          <button type="button" role="menuitem" data-pf="live">Live trading</button>
+          <button type="button" role="menuitem" data-pf="ai">AI API keys</button>
+          <button type="button" role="menuitem" data-pf="signout" class="pf-signout">Sign out</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -1092,6 +1124,93 @@
               <button class="btn btn-ghost" id="lv-modal-cancel">Cancel</button>
               <button class="btn lv-btn-send" id="lv-modal-send">Send order to broker</button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ TAB: PROFILE ══════ -->
+      <section class="tab-pane" id="tab-profile">
+        <div class="pf-tabs" id="pf-tabs" role="tablist">
+          <button type="button" class="pf-tab active" data-pf-tab="account">Account</button>
+          <button type="button" class="pf-tab" data-pf-tab="strategies">Strategies</button>
+          <button type="button" class="pf-tab" data-pf-tab="live">Live trading</button>
+          <button type="button" class="pf-tab" data-pf-tab="ai">AI API keys</button>
+        </div>
+
+        <div class="pf-panel" id="pf-account">
+          <div class="card mb12">
+            <div class="card-title">Account</div>
+            <div class="at-set-grid pf-grid">
+              <label>Name<input id="pf-name" type="text" maxlength="80"></label>
+              <label>Email<input id="pf-email" type="email" maxlength="254"></label>
+              <label id="pf-email-pw-wrap" style="display:none">Current password (to change the email)<input id="pf-email-pw" type="password" autocomplete="current-password"></label>
+            </div>
+            <div class="at-set-actions"><button type="button" class="btn btn-primary btn-sm" id="pf-save-account">Save</button><span class="small" id="pf-account-msg"></span></div>
+          </div>
+          <div class="card mb12">
+            <div class="card-title">Change password</div>
+            <div class="at-set-grid pf-grid">
+              <label>Current password<input id="pf-pw-cur" type="password" autocomplete="current-password"></label>
+              <label>New password (10+ characters)<input id="pf-pw-new" type="password" autocomplete="new-password"></label>
+              <label>New password again<input id="pf-pw-new2" type="password" autocomplete="new-password"></label>
+            </div>
+            <div class="at-set-actions"><button type="button" class="btn btn-primary btn-sm" id="pf-save-pw">Change password</button><span class="small" id="pf-pw-msg"></span></div>
+            <p class="muted small" style="margin:8px 0 0">Changing the password signs every other device out.</p>
+          </div>
+          <div class="card mb12" id="pf-owner-card" style="display:none">
+            <div class="pt-section-header">
+              <span class="card-title" style="margin:0">Allow new sign-ups <span class="pill">owner</span></span>
+              <label class="at-switch-wrap" title="Off: nobody else can create an account"><input type="checkbox" id="pf-signups" class="at-toggle"><span class="at-slider"></span></label>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">You are the owner. Keep this off unless you are inviting someone, and switch it off again afterwards. Everyone who signs in sees the same portfolio and trades.</p>
+            <div class="small" id="pf-signups-msg"></div>
+          </div>
+          <div class="card mb12"><button type="button" class="btn btn-ghost btn-sm" id="pf-signout">Sign out</button></div>
+        </div>
+
+        <div class="pf-panel" id="pf-strategies" style="display:none">
+          <div class="card mb12">
+            <div class="card-title">Strategies <span class="muted small">(only the switched-on ones vote on a BUY CE / BUY PE call: auto-trader, alerts, dashboard and chart)</span></div>
+            <div class="tbl-wrap">
+              <table class="dtbl keep-table pf-strat-table">
+                <thead><tr><th>On</th><th>Strategy</th><th>Vote weight</th><th>What it looks at</th></tr></thead>
+                <tbody id="pf-strat-body"></tbody>
+              </table>
+            </div>
+            <div class="pf-strat-sum small" id="pf-strat-sum"></div>
+            <div class="at-set-actions">
+              <button type="button" class="btn btn-primary btn-sm" id="pf-save-strat">Save strategies</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="pf-all-strat">Switch all on</button>
+              <span class="small" id="pf-strat-msg"></span>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">A call needs a score of at least 3 (up or down) from the switched-on strategies, and ADX of 20 or more. The next auto-scan (every 5 minutes) uses the new list. Past results in the Outcome log were made with whatever list was on at the time.</p>
+            <p class="muted small" style="margin:6px 0 0">Smart money follows the open-source "Smart Money Concepts" indicator by LuxAlgo (CC BY-NC-SA 4.0), ported to this app. The call rule on top of it is ours.</p>
+          </div>
+        </div>
+
+        <div class="pf-panel" id="pf-live" style="display:none">
+          <div class="card mb12">
+            <div class="pt-section-header">
+              <span class="card-title" style="margin:0">Allow live trading <span class="pill">real money</span></span>
+              <label class="at-switch-wrap" title="Off: the Live page is hidden and live mode cannot be switched on"><input type="checkbox" id="pf-live-allowed" class="at-toggle"><span class="at-slider"></span></label>
+            </div>
+            <div class="at-status" id="pf-live-status">Loading…</div>
+            <div class="pf-live-confirm" id="pf-live-confirm" style="display:none">
+              <p class="at-warn">Live orders are REAL orders at your broker with real money. Paper trading is not affected. Enter your account password to allow it. You still switch live mode on, with the typed phrase, on the Live page, and it is off again after every server restart.</p>
+              <div class="at-set-grid pf-grid"><label>Account password<input id="pf-live-pw" type="password" autocomplete="current-password"></label></div>
+              <div class="at-set-actions"><button type="button" class="btn btn-primary btn-sm" id="pf-live-ok">Allow live trading</button><button type="button" class="btn btn-ghost btn-sm" id="pf-live-cancel">Cancel</button></div>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">When allowed, the Live page appears in the side menu (broker connection, limits, kill switch). When not allowed, the server refuses to switch live mode on, whatever the browser sends.</p>
+            <div class="at-set-actions"><button type="button" class="btn btn-ghost btn-sm" id="pf-live-open" style="display:none">Open the Live page</button><span class="small" id="pf-live-msg"></span></div>
+          </div>
+        </div>
+
+        <div class="pf-panel" id="pf-ai" style="display:none">
+          <div class="card mb12">
+            <div class="card-title">AI API keys <span class="muted small">(used by the AI Analyst and the AI summaries)</span></div>
+            <div id="pf-ai-warn" class="at-warn" style="display:none"></div>
+            <div id="pf-ai-rows"></div>
+            <p class="muted small" style="margin:8px 0 0">Keys are encrypted on the server and never shown again, only the last 4 characters. The active provider answers AI requests; if it has no key saved here, Anthropic falls back to the server's own key (if one is set).</p>
           </div>
         </div>
       </section>

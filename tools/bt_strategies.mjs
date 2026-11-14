@@ -14,8 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Indicators } from '../frontend/js/indicators.js';
 import { istParts } from '../frontend/js/candles.js';
-import { buildStructure } from '../frontend/js/smc-structure.js';
-import { smcSignal, smcWithDisplacement, sweepChoch } from '../frontend/js/smc.js';
+import { buildSmc } from '../frontend/js/smc.js';
+import { RULES, ruleRows } from './smc_rules.mjs';
 import { srSignal } from '../frontend/js/sr.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -29,17 +29,17 @@ const U = files.map(f => {
   const sym = f.replace('ANGEL_', '').replace('_15m_730d.json', '');
   const candles = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
   const pre = JSON.parse(fs.readFileSync(path.join(dir, 'pre_' + f), 'utf8'));
-  const cacheF = path.join(dir, `smc2_${sym}.json`);
+  const cacheF = path.join(dir, `smc3_${sym}.json`);
   let smc;
   if (fs.existsSync(cacheF) && JSON.parse(fs.readFileSync(cacheF, 'utf8')).n === candles.length) smc = JSON.parse(fs.readFileSync(cacheF, 'utf8')).rows;
   else {
-    smc = new Array(candles.length).fill(null);
-    for (let i = 60; i < candles.length; i++) {
-      const win = candles.slice(Math.max(0, i - WINDOW + 1), i + 1);
-      const S = buildStructure(win, 3), last = win.length - 1;
-      const r = smcSignal(win, S), d = smcWithDisplacement(win, S, last), sc = sweepChoch(win, S, last);
-      smc[i] = [r.vote, r.parts.bias, r.parts.ob, r.parts.fvg, r.parts.sweep, r.parts.pd, d.vote, sc.vote, sc.stage === 'choch' ? 1 : sc.stage === 'retest' ? 2 : 0, sc.displaced ? 1 : 0];
-    }
+    // one pass of the LuxAlgo port over the whole history (the app's live scan has about a month of 15m bars, so very early state can differ slightly)
+    const R = buildSmc(candles);
+    smc = candles.map((c, i) => {
+      if (i < 60) return null;
+      const eq = (R.trailTop[i] + R.trailBottom[i]) / 2;
+      return [R.votes[i], R.internalBias[i], R.swingBias[i], Number.isFinite(eq) ? (c.c < eq ? 1 : c.c > eq ? -1 : 0) : 0];
+    });
     fs.writeFileSync(cacheF, JSON.stringify({ n: candles.length, rows: smc }));
   }
   const srF = path.join(dir, `sr_${sym}.json`);
@@ -64,25 +64,19 @@ const W = { trend: 2, rsi: 1, vwap: 1, structure: 2, fvg: 1, volume: 1, smc: 2 }
 function vote(u, i, id) {
   const r = u.pre[i]; if (!r) return 0;
   if (CORE.includes(id)) return r.votes.find(v => v.id === id)?.vote || 0;
+  if (id.startsWith('r_')) return u.rules?.[id]?.[i] || 0;      // rules built on the LuxAlgo outputs (tools/smc_rules.mjs, mode smc-rules)
   const s = u.smc[i]; if (!s) return 0;
   switch (id) {
     case 'smc': return s[0];
-    case 'ob': return s[2];                              // order-block retest in the direction of the structure
-    case 'sweep': return s[4];                           // liquidity sweep (either way)
-    case 'pd': return s[5];                              // premium / discount half of the swing range
+    case 'pd': return s[3];                              // premium / discount half of the swing range (+1 discount, -1 premium)
     case 'bbrev': return u.bbv[i][0];                    // Bollinger mean-reversion: close outside the band, bet on a return (below lower = up)
     case 'bbbrk': return u.bbv[i][1];                    // Bollinger breakout: close outside the band, ride it (above upper = up)
     case 'bbmid': return u.bbv[i][2];                    // Bollinger trend side: close above / below the middle band
-    case 'smcfvg': return s[3];
     case 'sr': return (u.sr[i] || [0])[0];                // support/resistance: breakout, break-and-retest or rejection of the previous day high/low and swing levels
     case 'srbrk': return (u.sr[i] || [0, 0])[1];          // ... fresh breakout of the previous day high/low
     case 'srrt': return (u.sr[i] || [0, 0, 0])[2];        // ... break-and-retest continuation
     case 'srrev': return (u.sr[i] || [0, 0, 0, 0])[3];    // ... rejection / reversal at a level
-    case 'smcdisp': return s[6];                         // SMC, but the structure break must have been a displacement candle
-    case 'sc_any': return s[7];                          // liquidity sweep -> change of character, on the CHoCH bar or on the pullback after it
-    case 'sc_choch': return s[8] === 1 ? s[7] : 0;       // ... on the CHoCH bar itself
-    case 'sc_retest': return s[8] === 2 ? s[7] : 0;      // ... on the pullback into the order block / gap
-    case 'sc_disp': return s[9] ? s[7] : 0;              // ... when the CHoCH candle was a displacement
+    case 'smcdisp': return s[0];                         // old id, now the same as 'smc' (LuxAlgo port); kept so the combination lists keep running
     case 'htf': return u.htf[i];                         // higher-timeframe trend: price vs 15m EMA100 / EMA200 (about hourly 25 / 50)
     case 'random': { let h = 2166136261; const t = `${u.sym}${i}`; for (let q = 0; q < t.length; q++) h = Math.imul(h ^ t.charCodeAt(q), 16777619); return (h >>> 0) % 7 === 0 ? ((h >>> 8) & 1 ? 1 : -1) : 0; }
     default: return 0;
@@ -183,6 +177,84 @@ function evaluateDef(def) {
 
 
 
+
+// ───────────── rules on the LuxAlgo outputs: node tools/bt_strategies.mjs smc-rules ─────────────
+if (process.argv[2] === 'smc-rules' || process.argv[2] === 'smc-combos') {
+  const COMBOS_MODE = process.argv[2] === 'smc-combos';
+  const NLs = String.fromCharCode(10);
+  for (const u of U) u.rules = ruleRows(u.candles);
+  const f0s = x => String(Math.round(x));
+  const defs = [];
+  if (!COMBOS_MODE) {
+    for (const [id, name, what] of RULES) {
+      defs.push({ id, name, what, def: { mode: 'all', ids: [id] } });
+      for (const [x, label] of [['vwap', 'VWAP'], ['htf', 'higher-timeframe trend']]) defs.push({ id: id + '+' + x, name: name + ' + ' + label + ' agree', what: what + ' Only when ' + label + ' points the same way.', def: { mode: 'all', ids: [id, x] } });
+    }
+  } else {
+    // SMC together with every other strategy: pairs, triples, and as one more vote in the score
+    const LAB = { trend: 'EMA trend', rsi: 'RSI', vwap: 'VWAP', structure: 'Structure BOS/CHoCH', fvg: 'FVG retest', volume: 'Volume push', htf: 'Higher-timeframe trend', bbrev: 'Bollinger reversal', bbbrk: 'Bollinger breakout', bbmid: 'Bollinger mid-band', sr: 'Support/resistance', srbrk: 'S/R breakout', srrev: 'S/R rejection' };
+    const OTHERS = Object.keys(LAB), TRIPLE_POOL = ['trend', 'vwap', 'htf', 'rsi', 'volume', 'structure'];
+    const BASES = [['smc', 'SMC (today)'], ['r_nozone', 'SMC without the discount/premium rule']];
+    for (const [b, bn] of BASES) {
+      defs.push({ id: b, name: bn + ' alone', what: 'The SMC rule by itself.', def: { mode: 'all', ids: [b] } });
+      for (const x of OTHERS) defs.push({ id: b + '+' + x, name: bn + ' + ' + LAB[x] + ' agree', what: 'Both vote the same way on the same bar.', def: { mode: 'all', ids: [b, x] } });
+      for (let a = 0; a < TRIPLE_POOL.length; a++) for (let c = a + 1; c < TRIPLE_POOL.length; c++) {
+        const x = TRIPLE_POOL[a], y = TRIPLE_POOL[c];
+        defs.push({ id: b + '+' + x + '+' + y, name: bn + ' + ' + LAB[x] + ' + ' + LAB[y] + ' agree', what: 'All three vote the same way on the same bar.', def: { mode: 'all', ids: [b, x, y] } });
+      }
+      for (const min of [5, 6, 7, 8]) defs.push({ id: b + '|score' + min, name: 'Live vote (6 strategies) + ' + bn + ' as a vote of weight 2, score >= ' + min, what: 'The six core strategies and SMC (weight 2) add up; a call needs the score.', def: { mode: 'score', ids: [...CORE, b], min, weights: { [b]: 2 } } });
+      for (const min of [6, 7]) defs.push({ id: b + '|also' + min, name: 'Live vote >= ' + min + ' and ' + bn + ' agrees', what: 'The six core strategies reach the score and SMC points the same way.', def: { mode: 'score', ids: CORE, min, also: [b] } });
+    }
+  }
+  const rows = defs.map(d => ({ ...d, r: evaluateDef(d.def), trades: simulate(candidates(d.def), MODELS.realistic) }));
+  const rndDef = { mode: 'all', ids: ['random'] };
+  const rnd = { r: evaluateDef(rndDef), trades: simulate(candidates(rndDef), MODELS.realistic) };
+  const pool = rnd.trades.map(t => t.net), K = defs.length;
+  let seed = 4242; const r01 = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const bootP = (avg, n) => { let hits = 0; const R = 3000; for (let k = 0; k < R; k++) { let sum = 0; for (let q = 0; q < n; q++) sum += pool[Math.floor(r01() * pool.length)]; if (sum / n >= avg) hits++; } return hits / R; };
+  const quarter = ts => { const d = new Date(ts + 19800000); return d.getUTCFullYear() + 'Q' + (Math.floor(d.getUTCMonth() / 3) + 1); };
+  for (const x of rows) {
+    const q = x.r.realistic, n = q.n;
+    x.p = n >= 20 ? bootP(q.avg, n) : 1; x.adj = Math.min(1, x.p * K);
+    const byQ = new Map(); x.trades.forEach(t => { const k = quarter(t.ts); byQ.set(k, (byQ.get(k) || 0) + t.net); });
+    x.qPos = [...byQ.values()].filter(v => v > 0).length; x.qN = byQ.size;
+  }
+  const out = [];
+  out.push(COMBOS_MODE ? '# SMC combined with the other strategies' + NLs : '# Rules built on the LuxAlgo SMC outputs' + NLs);
+  out.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `node tools/bt_strategies.mjs ' + (COMBOS_MODE ? 'smc-combos' : 'smc-rules') + '`. Same engine as the other reports: signal at a bar close, fill at the next open, entries 10:15-14:30 IST, ADX >= 20, ATM option held to -30% / +30%, 10,000 Rs premium per trade after full option charges, 14 symbols, 2 years of 15-minute candles, **modelled option prices** (no historical option candles exist). ' + (COMBOS_MODE ? 'SMC = the LuxAlgo-port vote of `frontend/js/smc.js` (internal trend + order block tap + discount/premium); the second base drops the discount/premium condition so it fires more often. Each is combined with every other strategy (pairs that must agree, triples, and as a weight-2 vote added to the live six-strategy score).' : 'Rule definitions are in `tools/smc_rules.mjs`; they use only the indicator outputs of `frontend/js/smc.js` (structure events, order blocks, equal highs/lows, fair value gaps, swing range).') + NLs);
+  out.push((COMBOS_MODE ? '' : 'Each rule is also tried with VWAP and with the higher-timeframe trend (EMA100/200) agreeing. ') + '**' + K + ' variants** were tried. With that many tries a few look good by luck, so the table shows a bootstrap p-value (how often the same number of random-direction trades does as well) and the p-value times ' + K + ' (**adjusted p**: above about 0.05 is NOT evidence of an edge). `Quarters` = quarters with a profit.' + NLs);
+  out.push('Random-direction yardstick (no skill): **' + f0s(rnd.r.realistic.avg) + ' Rs per trade**, profit factor ' + rnd.r.realistic.pf.toFixed(2) + ', ' + rnd.r.realistic.n + ' trades.' + NLs);
+  out.push('| Rank | Rule | Signals | Trades | Avg Rs/trade | PF | Win | Total Rs | First 60% / last 40% | No-decay avg | Underlying 1h (bps) | Up-move hit | p | Adjusted p | Quarters |' + NLs + '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  [...rows].sort((a, b) => b.r.realistic.avg - a.r.realistic.avg).forEach((x, i) => {
+    const q = x.r.realistic;
+    out.push('| ' + (i + 1) + ' | ' + x.name + ' | ' + x.r.cands + ' | ' + q.n + ' | ' + (q.n ? f0s(q.avg) : '-') + ' | ' + q.pf.toFixed(2) + ' | ' + q.win.toFixed(0) + '% | ' + f0s(q.net) + ' | ' + (q.nFirst ? f0s(q.first) : '-') + ' / ' + (q.nLast ? f0s(q.last) : '-') + ' | ' + f0s(x.r.nodecay.avg) + ' | ' + x.r.raw.bps.toFixed(1) + ' | ' + x.r.raw.hit.toFixed(0) + '% | ' + (q.n >= 20 ? x.p.toFixed(3) : '-') + ' | ' + (q.n >= 20 ? x.adj.toFixed(2) : '-') + ' | ' + x.qPos + ' of ' + x.qN + ' |');
+  });
+  out.push('');
+  const both = rows.filter(x => x.r.realistic.n >= 40 && x.r.realistic.net > 0 && x.r.realistic.first > 0 && x.r.realistic.last > 0);
+  const sig = rows.filter(x => x.r.realistic.n >= 40 && x.adj < 0.05);
+  const beatsRandom = rows.filter(x => x.r.realistic.n >= 40 && x.r.realistic.avg > rnd.r.realistic.avg);
+  out.push('## What the numbers say' + NLs);
+  out.push('- Variants with at least 40 trades that beat the random yardstick on the average trade: **' + beatsRandom.length + ' of ' + rows.filter(x => x.r.realistic.n >= 40).length + '**.');
+  out.push('- Variants with at least 40 trades that were profitable overall AND in both halves of the period: **' + (both.length ? both.map(x => x.name + ' (' + x.r.realistic.n + ' trades, ' + f0s(x.r.realistic.avg) + ' Rs)').join('; ') : 'none') + '**.');
+  out.push('- Variants with at least 40 trades and an adjusted p below 0.05 (a real edge after correcting for the ' + K + ' tries): **' + (sig.length ? sig.map(x => x.name).join('; ') : 'none') + '**.');
+  out.push('- Many rules fire only a few dozen times in two years; a result on that few trades says very little either way.');
+  out.push('');
+  if (!COMBOS_MODE) out.push('## One section per rule' + NLs);
+  for (const x of COMBOS_MODE ? [] : rows.filter(r => !r.id.includes('+'))) {
+    const q = x.r.realistic, t = x.trades, cell = a => (a.length >= 15 ? a.length + ' trades, ' + f0s(a.reduce((s2, k) => s2 + k.net, 0) / a.length) + ' Rs' : a.length + ' trades (too few)');
+    out.push('### ' + x.name + NLs);
+    out.push('*' + x.what + '*' + NLs);
+    out.push('- Overall: ' + q.n + ' trades, ' + (q.n ? f0s(q.avg) : '-') + ' Rs per trade, profit factor ' + q.pf.toFixed(2) + ', win ' + q.win.toFixed(0) + '%. Underlying 1h move ' + x.r.raw.bps.toFixed(1) + ' bps, ' + x.r.raw.hit.toFixed(0) + '% of signals right (' + x.r.raw.n + ' signals).');
+    out.push('- Calls vs puts: BUY CE ' + cell(t.filter(a => a.dir > 0)) + ' | BUY PE ' + cell(t.filter(a => a.dir < 0)));
+    out.push('- Indices vs stocks: ' + cell(t.filter(a => a.idx)) + ' | ' + cell(t.filter(a => !a.idx)));
+    out.push('');
+  }
+  fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'reports', COMBOS_MODE ? 'smc_combinations_report.md' : 'smc_rules_report.md'), out.join(NLs) + NLs);
+  console.log(out.slice(0, 30).join(NLs));
+  process.exit(0);
+}
+
 // ───────────── one report with every strategy tested separately ─────────────
 if (process.argv[2] === 'each') {
   const NLe = String.fromCharCode(10);
@@ -198,15 +270,8 @@ if (process.argv[2] === 'each') {
     ['bbbrk', 'Bollinger breakout', 'Close outside the Bollinger band (20, 2): rides the breakout (above the upper band = up).'],
     ['bbmid', 'Bollinger mid-band side', 'Close above the middle band is bullish, below is bearish.'],
     ['htf', 'Hourly trend (EMA100/200 on 15m)', 'Price above EMA100 and EMA100 above EMA200 is bullish; the mirror is bearish.'],
-    ['smc', 'SMC (structure + order block / gap / sweep + discount-premium)', 'Structure bias, a point of interest (order block, gap or liquidity sweep) in that direction, in the discount (long) or premium (short) half.'],
-    ['smcdisp', 'SMC + displacement candle', 'The same, but the structure break behind it must have been a big one-directional candle.'],
-    ['ob', 'SMC part: order-block retest', 'Price taps an unmitigated order block in the direction of the structure and rejects it.'],
-    ['sweep', 'SMC part: liquidity sweep', 'A wick takes the last swing low/high and closes back inside.'],
-    ['pd', 'SMC part: premium / discount half', 'Below 50% of the last swing range is bullish, above is bearish.'],
-    ['sc_any', 'Sweep then CHoCH', 'A liquidity sweep, then a change of character the other way; entered on that candle or the pullback.'],
-    ['sc_choch', 'Sweep then CHoCH: on the CHoCH candle', 'The same, entered only on the change-of-character candle.'],
-    ['sc_retest', 'Sweep then CHoCH: on the pullback', 'The same, entered only on the pullback into the order block / gap.'],
-    ['sc_disp', 'Sweep then CHoCH with a displacement candle', 'The same, and the change-of-character candle must be a displacement.'],
+    ['smc', 'SMC (LuxAlgo port: internal trend + order block tap + discount/premium)', 'Internal structure up/down, an unmitigated order block tapped by a candle in that direction, price in the discount (long) or premium (short) half of the swing range.'],
+    ['pd', 'SMC part: premium / discount half (LuxAlgo swing range)', 'Below the midpoint of the swing range is bullish, above is bearish.'],
     ['sr', 'Support / resistance (all three setups)', 'Previous day high/low/close and swing levels: breakout, break-and-retest or rejection.'],
     ['srbrk', 'S/R breakout', 'A fresh strong close beyond the previous day high or low.'],
     ['srrt', 'S/R break-and-retest', 'After such a breakout today, price retests the level and holds.'],
@@ -345,8 +410,8 @@ if (process.argv[2] === 'sr-vwap') {
 // ───────────── what to test ─────────────
 const NAMES = { trend: 'EMA trend 9/21/50', rsi: 'RSI momentum', vwap: 'VWAP side', structure: 'Structure BOS/CHoCH', fvg: 'FVG retest', volume: 'Volume push',
   htf: 'Higher-timeframe trend (EMA100/200 on 15m)', smcdisp: 'SMC + displacement candle', sc_any: 'Sweep then CHoCH (CHoCH bar or pullback)', sc_choch: 'Sweep then CHoCH: enter on the CHoCH bar', sc_retest: 'Sweep then CHoCH: enter on the pullback', sc_disp: 'Sweep then CHoCH with a displacement candle', sr: 'Support/resistance (all three setups)', srbrk: 'S/R breakout of previous day high/low', srrt: 'S/R break-and-retest', srrev: 'S/R rejection (reversal at a level)', smc: 'SMC (structure + order block / gap / sweep + discount-premium)', ob: 'SMC part: order-block retest', sweep: 'SMC part: liquidity sweep', pd: 'SMC part: premium/discount half', random: 'RANDOM direction (yardstick)' };
-const SINGLE = ['random', 'trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume', 'htf', 'smc', 'ob', 'sweep', 'pd'];
-const VARIANT_SINGLE = ['smcdisp', 'sc_any', 'sc_choch', 'sc_retest', 'sc_disp'];
+const SINGLE = ['random', 'trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume', 'htf', 'smc', 'pd'];
+const VARIANT_SINGLE = [];
 const SR_SINGLE = ['sr', 'srbrk', 'srrt', 'srrev'];
 const singles = SINGLE.map(id => ({ id, name: NAMES[id], def: { mode: 'all', ids: [id] } }));
 
@@ -365,7 +430,6 @@ const COMBOS = [
   { name: 'SMC + trend + VWAP + RSI agree', def: { mode: 'all', ids: ['smc', 'trend', 'vwap', 'rsi'] } },
   { name: 'Structure + FVG agree', def: { mode: 'all', ids: ['structure', 'fvg'] } },
   { name: 'Structure + EMA trend + VWAP agree', def: { mode: 'all', ids: ['structure', 'trend', 'vwap'] } },
-  { name: 'Order block + sweep agree', def: { mode: 'all', ids: ['ob', 'sweep'] } },
   { name: 'EMA trend + VWAP + RSI agree', def: { mode: 'all', ids: ['trend', 'vwap', 'rsi'] } },
   { name: 'SMC + higher-timeframe trend agree', def: { mode: 'all', ids: ['smc', 'htf'] } },
   { name: 'SMC + higher-timeframe trend + VWAP agree', def: { mode: 'all', ids: ['smc', 'htf', 'vwap'] } },
@@ -387,7 +451,6 @@ const SR_COMBOS = [
   { name: 'S/R breakout + higher-timeframe trend agree', def: { mode: 'all', ids: ['srbrk', 'htf'] } },
   { name: 'S/R break-and-retest + VWAP agree', def: { mode: 'all', ids: ['srrt', 'vwap'] } },
   { name: 'S/R rejection + RSI agree', def: { mode: 'all', ids: ['srrev', 'rsi'] } },
-  { name: 'S/R rejection + SMC liquidity sweep agree', def: { mode: 'all', ids: ['srrev', 'sweep'] } },
   { name: 'S/R + SMC (displacement) agree', def: { mode: 'all', ids: ['sr', 'smcdisp'] } },
   { name: 'Live vote (>= 6) + S/R agree', def: { mode: 'score', ids: CORE, min: 6, also: ['sr'] } },
   { name: 'Live vote (>= 7) + S/R agree', def: { mode: 'score', ids: CORE, min: 7, also: ['sr'] } },
@@ -395,19 +458,6 @@ const SR_COMBOS = [
   { name: 'S/R + VWAP + volume agree', def: { mode: 'all', ids: ['sr', 'vwap', 'volume'] } },
 ];
 const VARIANTS = [
-  { name: 'SMC + displacement + VWAP agree', def: { mode: 'all', ids: ['smcdisp', 'vwap'] } },
-  { name: 'SMC + displacement + higher-timeframe trend agree', def: { mode: 'all', ids: ['smcdisp', 'htf'] } },
-  { name: 'SMC + displacement + volume agree', def: { mode: 'all', ids: ['smcdisp', 'volume'] } },
-  { name: 'Sweep->CHoCH + VWAP agree', def: { mode: 'all', ids: ['sc_any', 'vwap'] } },
-  { name: 'Sweep->CHoCH + higher-timeframe trend agree', def: { mode: 'all', ids: ['sc_any', 'htf'] } },
-  { name: 'Sweep->CHoCH + displacement + VWAP agree', def: { mode: 'all', ids: ['sc_disp', 'vwap'] } },
-  { name: 'Sweep->CHoCH + RSI agree', def: { mode: 'all', ids: ['sc_any', 'rsi'] } },
-  { name: 'Sweep->CHoCH (pullback) + VWAP + volume agree', def: { mode: 'all', ids: ['sc_retest', 'vwap', 'volume'] } },
-  { name: 'Sweep->CHoCH + live vote (>= 6) agree', def: { mode: 'score', ids: CORE, min: 6, also: ['sc_any'] } },
-  { name: 'Live vote (>= 7) + sweep->CHoCH agree', def: { mode: 'score', ids: CORE, min: 7, also: ['sc_any'] } },
-  { name: 'Live vote (>= 6) + SMC displacement agree', def: { mode: 'score', ids: CORE, min: 6, also: ['smcdisp'] } },
-  { name: 'Sweep->CHoCH, morning only (10:15-11:30)', def: { mode: 'all', ids: ['sc_any'], from: 10 * 60 + 15, to: 11 * 60 + 30 } },
-  { name: 'Sweep->CHoCH + displacement + VWAP + higher-timeframe trend agree', def: { mode: 'all', ids: ['sc_disp', 'vwap', 'htf'] } },
 ];
 const NL = String.fromCharCode(10);
 const f0 = x => String(Math.round(x));
@@ -424,7 +474,7 @@ console.log('Evaluating combinations...');
 const cRes = COMBOS.map(c => ({ ...c, r: evaluateDef(c.def) }));
 
 // every pair and triple of the 7 strategies (AND-agreement), ranked on the FIRST 60% and judged on the LAST 40%
-const POOL = ['trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume', 'smc', 'htf', 'smcdisp', 'sc_any', 'sr', 'srbrk', 'srrev'];
+const POOL = ['trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume', 'smc', 'htf', 'sr', 'srbrk', 'srrev'];
 const subsets = [];
 for (let a = 0; a < POOL.length; a++) for (let b = a + 1; b < POOL.length; b++) { subsets.push([POOL[a], POOL[b]]); for (let c = b + 1; c < POOL.length; c++) subsets.push([POOL[a], POOL[b], POOL[c]]); }
 console.log(`Evaluating ${subsets.length} pairs and triples...`);

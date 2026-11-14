@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { Indicators } from '../frontend/js/indicators.js';
 import { istParts, vwapIst } from '../frontend/js/candles.js';
 import { sessionLevels, avgRange } from '../frontend/js/sr.js';
-import { pivots } from '../frontend/js/smc.js';
+import { pivots } from '../frontend/js/sr.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dir = path.join(root, 'tools', '.cache');

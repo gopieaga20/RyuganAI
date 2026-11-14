@@ -1,6 +1,6 @@
 # Every strategy tested separately
 
-Generated 2026-11-13 by `node tools/bt_strategies.mjs each`. Each strategy runs ALONE through the same engine: signal on a bar close, fill at the next bar open, entries 10:15-14:30 IST, ADX >= 20, at most 5 open, one per underlying, ATM option held to stop (-30%) or target (+30%), 10,000 Rs premium per trade after full option charges. Data: 14 symbols (2 indices, 12 stocks), 2 years of 15-minute candles. **Option prices are a model** (no historical option candles exist): "realistic" includes time decay, "no decay" is a best case no real option achieves. The **underlying 1h move** column needs no option model: the average move of the underlying in the signal direction over the next hour, in basis points.
+Generated 2026-11-14 by `node tools/bt_strategies.mjs each`. Each strategy runs ALONE through the same engine: signal on a bar close, fill at the next bar open, entries 10:15-14:30 IST, ADX >= 20, at most 5 open, one per underlying, ATM option held to stop (-30%) or target (+30%), 10,000 Rs premium per trade after full option charges. Data: 14 symbols (2 indices, 12 stocks), 2 years of 15-minute candles. **Option prices are a model** (no historical option candles exist): "realistic" includes time decay, "no decay" is a best case no real option achieves. The **underlying 1h move** column needs no option model: the average move of the underlying in the signal direction over the next hour, in basis points.
 
 ## Ranking (best average per trade first)
 
@@ -10,28 +10,21 @@ Generated 2026-11-13 by `node tools/bt_strategies.mjs each`. Each strategy runs 
 | 2 | Bollinger breakout | 6659 | 1887 | -277 | 0.83 | 46% | -522810 | -574536 | -21084 | -341 / -197 | 115 | 1.5 | 50% |
 | 3 | Bollinger mid-band side | 88161 | 2111 | -299 | 0.82 | 45% | -630734 | -645810 | -21174 | -309 / -288 | 183 | 0.2 | 49% |
 | 4 | FVG retest | 6276 | 1966 | -303 | 0.82 | 45% | -595640 | -632154 | -21174 | -331 / -270 | 73 | 0.6 | 49% |
-| 5 | Sweep then CHoCH | 946 | 630 | -329 | 0.80 | 45% | -207252 | -222162 | -15060 | -415 / -215 | 76 | 1.5 | 50% |
-| 6 | SMC + displacement candle | 710 | 409 | -330 | 0.80 | 45% | -135006 | -158742 | -9036 | -397 / -232 | 29 | 0.0 | 51% |
-| 7 | RANDOM direction (yardstick) | 12544 | 2190 | -348 | 0.79 | 44% | -762370 | -804126 | -18252 | -512 / -162 | 62 | -0.2 | 49% |
-| 8 | Sweep then CHoCH: on the CHoCH candle | 402 | 392 | -351 | 0.79 | 44% | -137748 | -149676 | -9036 | -470 / -193 | 46 | 1.8 | 49% |
-| 9 | Support / resistance (all three setups) | 8940 | 2084 | -385 | 0.77 | 44% | -802626 | -849588 | -24186 | -465 / -293 | 59 | 0.9 | 50% |
-| 10 | SMC (structure + order block / gap / sweep + discount-premium) | 3116 | 1387 | -389 | 0.77 | 44% | -539286 | -559590 | -21084 | -409 / -362 | -17 | -0.6 | 49% |
-| 11 | Structure BOS / CHoCH | 88173 | 2114 | -391 | 0.77 | 44% | -825584 | -825584 | -30240 | -361 / -423 | 97 | -0.0 | 50% |
-| 12 | Sweep then CHoCH: on the pullback | 544 | 368 | -422 | 0.75 | 43% | -155370 | -172962 | -9036 | -422 / -422 | 10 | 1.3 | 51% |
-| 13 | S/R breakout | 4143 | 1617 | -430 | 0.75 | 43% | -694611 | -715215 | -24216 | -479 / -366 | 52 | 1.5 | 50% |
-| 14 | Volume push | 6167 | 1853 | -431 | 0.75 | 43% | -798024 | -832578 | -21084 | -461 / -395 | 37 | 1.5 | 49% |
-| 15 | S/R break-and-retest | 1919 | 1089 | -477 | 0.73 | 42% | -519548 | -527532 | -21084 | -453 / -509 | -45 | -0.1 | 51% |
-| 16 | SMC part: order-block retest | 3009 | 1143 | -484 | 0.72 | 42% | -553608 | -556590 | -21174 | -602 / -322 | -47 | 0.1 | 49% |
-| 17 | EMA trend 9/21/50 | 72454 | 2110 | -485 | 0.72 | 42% | -1023326 | -1026594 | -27228 | -502 / -465 | 46 | -0.8 | 49% |
-| 18 | SMC part: premium / discount half | 59582 | 2042 | -486 | 0.72 | 42% | -993115 | -1020702 | -27138 | -596 / -360 | -62 | -0.1 | 50% |
-| 19 | RSI momentum | 52962 | 2083 | -491 | 0.72 | 42% | -1023682 | -1037682 | -27198 | -548 / -426 | 24 | 0.1 | 50% |
-| 20 | SMC part: liquidity sweep | 3064 | 1528 | -509 | 0.71 | 42% | -778164 | -792024 | -18102 | -613 / -385 | -112 | -0.1 | 50% |
-| 21 | S/R rejection (reversal) | 2933 | 1523 | -510 | 0.71 | 42% | -777440 | -809016 | -21144 | -619 / -372 | -32 | 0.5 | 49% |
-| 22 | Hourly trend (EMA100/200 on 15m) | 61465 | 2114 | -515 | 0.71 | 42% | -1089320 | -1101564 | -39426 | -596 / -424 | 33 | -1.3 | 49% |
-| 23 | Sweep then CHoCH with a displacement candle | 244 | 169 | -529 | 0.70 | 41% | -89448 | -98394 | -6024 | -565 / -479 | -86 | -1.8 | 48% |
-| 24 | Bollinger reversal | 6659 | 1899 | -608 | 0.66 | 40% | -1155477 | -1163928 | -39186 | -706 / -492 | -162 | -1.5 | 49% |
+| 5 | RANDOM direction (yardstick) | 12544 | 2190 | -348 | 0.79 | 44% | -762370 | -804126 | -18252 | -512 / -162 | 62 | -0.2 | 49% |
+| 6 | Support / resistance (all three setups) | 8940 | 2084 | -385 | 0.77 | 44% | -802626 | -849588 | -24186 | -465 / -293 | 59 | 0.9 | 50% |
+| 7 | Structure BOS / CHoCH | 88173 | 2114 | -391 | 0.77 | 44% | -825584 | -825584 | -30240 | -361 / -423 | 97 | -0.0 | 50% |
+| 8 | S/R breakout | 4143 | 1617 | -430 | 0.75 | 43% | -694611 | -715215 | -24216 | -479 / -366 | 52 | 1.5 | 50% |
+| 9 | Volume push | 6167 | 1853 | -431 | 0.75 | 43% | -798024 | -832578 | -21084 | -461 / -395 | 37 | 1.5 | 49% |
+| 10 | S/R break-and-retest | 1919 | 1089 | -477 | 0.73 | 42% | -519548 | -527532 | -21084 | -453 / -509 | -45 | -0.1 | 51% |
+| 11 | EMA trend 9/21/50 | 72454 | 2110 | -485 | 0.72 | 42% | -1023326 | -1026594 | -27228 | -502 / -465 | 46 | -0.8 | 49% |
+| 12 | RSI momentum | 52962 | 2083 | -491 | 0.72 | 42% | -1023682 | -1037682 | -27198 | -548 / -426 | 24 | 0.1 | 50% |
+| 13 | S/R rejection (reversal) | 2933 | 1523 | -510 | 0.71 | 42% | -777440 | -809016 | -21144 | -619 / -372 | -32 | 0.5 | 49% |
+| 14 | SMC part: premium / discount half (LuxAlgo swing range) | 87439 | 2120 | -511 | 0.71 | 42% | -1084195 | -1104546 | -30210 | -647 / -357 | -70 | 0.7 | 50% |
+| 15 | Hourly trend (EMA100/200 on 15m) | 61465 | 2114 | -515 | 0.71 | 42% | -1089320 | -1101564 | -39426 | -596 / -424 | 33 | -1.3 | 49% |
+| 16 | Bollinger reversal | 6659 | 1899 | -608 | 0.66 | 40% | -1155477 | -1163928 | -39186 | -706 / -492 | -162 | -1.5 | 49% |
+| 17 | SMC (LuxAlgo port: internal trend + order block tap + discount/premium) | 218 | 111 | -690 | 0.63 | 39% | -76590 | -79572 | -6024 | -817 / -465 | -176 | 0.4 | 48% |
 
-The random yardstick averages **-348 Rs per trade**. 6 of 23 strategies beat it on the average trade; **0 are profitable** in the realistic model.
+The random yardstick averages **-348 Rs per trade**. 4 of 16 strategies beat it on the average trade; **0 are profitable** in the realistic model.
 
 ## One section per strategy
 
@@ -178,121 +171,30 @@ The random yardstick averages **-348 Rs per trade**. 6 of 23 strategies beat it 
 - **By year:** 2024: 148 trades, -460 Rs (PF 0.73) | 2025: 936 trades, -636 Rs (PF 0.65) | 2026: 1030 trades, -413 Rs (PF 0.76)
 - **Best / worst symbols (15+ trades):** best TCS NS -15 (44), NSEI -15 (16), TATASTEEL NS -61 (65) | worst BHARTIARTL NS -731 (259), SBIN NS -720 (68), ITC NS -669 (197)
 
-### SMC (structure + order block / gap / sweep + discount-premium)
+### SMC (LuxAlgo port: internal trend + order block tap + discount/premium)
 
-*Structure bias, a point of interest (order block, gap or liquidity sweep) in that direction, in the discount (long) or premium (short) half.*
+*Internal structure up/down, an unmitigated order block tapped by a candle in that direction, price in the discount (long) or premium (short) half of the swing range.*
 
-- **Overall (realistic option model):** 1387 trades, -389 Rs per trade, total -539286 Rs, profit factor 0.77, win rate 44%, max drawdown -559590, worst day -21084.
-- **Best case, no time decay:** -17 Rs per trade, profit factor 0.99.
-- **The underlying itself:** -0.6 bps over the next hour, 49% of signals moved the right way (2815 signals).
-- **Calls (up) vs puts (down):** BUY CE: 711 trades, -643 Rs (PF 0.65) | BUY PE: 676 trades, -121 Rs (PF 0.92)
-- **Indices vs stocks:** indices: 220 trades, 176 Rs (PF 1.12) | stocks: 1167 trades, -495 Rs (PF 0.72)
-- **Time of day:** 10:15-11:30: 450 trades, -375 Rs (PF 0.78) | 11:30-13:00: 486 trades, -311 Rs (PF 0.81) | 13:00-14:30: 451 trades, -487 Rs (PF 0.72)
-- **By year:** 2024: 117 trades, -297 Rs (PF 0.82) | 2025: 635 trades, -435 Rs (PF 0.75) | 2026: 635 trades, -360 Rs (PF 0.79)
-- **Best / worst symbols (15+ trades):** best NSEI 387 (97), NSEBANK 9 (123), INFY NS -238 (121) | worst RELIANCE NS -932 (98), ITC NS -774 (75), LT NS -741 (95)
+- **Overall (realistic option model):** 111 trades, -690 Rs per trade, total -76590 Rs, profit factor 0.63, win rate 39%, max drawdown -79572, worst day -6024.
+- **Best case, no time decay:** -176 Rs per trade, profit factor 0.89.
+- **The underlying itself:** 0.4 bps over the next hour, 48% of signals moved the right way (195 signals).
+- **Calls (up) vs puts (down):** BUY CE: 59 trades, -1082 Rs (PF 0.47) | BUY PE: 52 trades, -246 Rs (PF 0.85)
+- **Indices vs stocks:** indices: 13 trades (too few) | stocks: 98 trades, -688 Rs (PF 0.63)
+- **Time of day:** 10:15-11:30: 23 trades, -1709 Rs (PF 0.28) | 11:30-13:00: 44 trades, -424 Rs (PF 0.75) | 13:00-14:30: 44 trades, -424 Rs (PF 0.75)
+- **By year:** 2024: 13 trades (too few) | 2025: 58 trades, -635 Rs (PF 0.65) | 2026: 40 trades, -465 Rs (PF 0.73)
 
-### SMC + displacement candle
+### SMC part: premium / discount half (LuxAlgo swing range)
 
-*The same, but the structure break behind it must have been a big one-directional candle.*
+*Below the midpoint of the swing range is bullish, above is bearish.*
 
-- **Overall (realistic option model):** 409 trades, -330 Rs per trade, total -135006 Rs, profit factor 0.80, win rate 45%, max drawdown -158742, worst day -9036.
-- **Best case, no time decay:** 29 Rs per trade, profit factor 1.02.
-- **The underlying itself:** 0.0 bps over the next hour, 51% of signals moved the right way (655 signals).
-- **Calls (up) vs puts (down):** BUY CE: 225 trades, -534 Rs (PF 0.70) | BUY PE: 184 trades, -80 Rs (PF 0.95)
-- **Indices vs stocks:** indices: 53 trades, 42 Rs (PF 1.03) | stocks: 356 trades, -385 Rs (PF 0.77)
-- **Time of day:** 10:15-11:30: 115 trades, -458 Rs (PF 0.74) | 11:30-13:00: 164 trades, -88 Rs (PF 0.94) | 13:00-14:30: 130 trades, -522 Rs (PF 0.70)
-- **By year:** 2024: 32 trades, -952 Rs (PF 0.52) | 2025: 202 trades, -341 Rs (PF 0.80) | 2026: 175 trades, -203 Rs (PF 0.87)
-- **Best / worst symbols (15+ trades):** best NSEI 485 (24), INFY NS 257 (44), ICICIBANK NS 216 (26) | worst LT NS -1168 (26), MARUTI NS -1078 (31), ITC NS -927 (23)
-
-### SMC part: order-block retest
-
-*Price taps an unmitigated order block in the direction of the structure and rejects it.*
-
-- **Overall (realistic option model):** 1143 trades, -484 Rs per trade, total -553608 Rs, profit factor 0.72, win rate 42%, max drawdown -556590, worst day -21174.
-- **Best case, no time decay:** -47 Rs per trade, profit factor 0.97.
-- **The underlying itself:** 0.1 bps over the next hour, 49% of signals moved the right way (2708 signals).
-- **Calls (up) vs puts (down):** BUY CE: 581 trades, -670 Rs (PF 0.63) | BUY PE: 562 trades, -292 Rs (PF 0.82)
-- **Indices vs stocks:** indices: 190 trades, 111 Rs (PF 1.08) | stocks: 953 trades, -603 Rs (PF 0.67)
-- **Time of day:** 10:15-11:30: 430 trades, -587 Rs (PF 0.67) | 11:30-13:00: 335 trades, -203 Rs (PF 0.87) | 13:00-14:30: 378 trades, -618 Rs (PF 0.66)
-- **By year:** 2024: 96 trades, -639 Rs (PF 0.65) | 2025: 543 trades, -661 Rs (PF 0.64) | 2026: 504 trades, -265 Rs (PF 0.84)
-- **Best / worst symbols (15+ trades):** best NSEI 131 (82), NSEBANK 96 (108), INFY NS -224 (86) | worst ICICIBANK NS -1014 (72), MARUTI NS -871 (84), ITC NS -764 (72)
-
-### SMC part: liquidity sweep
-
-*A wick takes the last swing low/high and closes back inside.*
-
-- **Overall (realistic option model):** 1528 trades, -509 Rs per trade, total -778164 Rs, profit factor 0.71, win rate 42%, max drawdown -792024, worst day -18102.
-- **Best case, no time decay:** -112 Rs per trade, profit factor 0.93.
-- **The underlying itself:** -0.1 bps over the next hour, 50% of signals moved the right way (2636 signals).
-- **Calls (up) vs puts (down):** BUY CE: 789 trades, -634 Rs (PF 0.65) | BUY PE: 739 trades, -376 Rs (PF 0.78)
-- **Indices vs stocks:** indices: 255 trades, -520 Rs (PF 0.70) | stocks: 1273 trades, -507 Rs (PF 0.71)
-- **Time of day:** 10:15-11:30: 338 trades, -175 Rs (PF 0.89) | 11:30-13:00: 564 trades, -600 Rs (PF 0.67) | 13:00-14:30: 626 trades, -609 Rs (PF 0.66)
-- **By year:** 2024: 113 trades, -360 Rs (PF 0.79) | 2025: 681 trades, -636 Rs (PF 0.65) | 2026: 734 trades, -415 Rs (PF 0.76)
-- **Best / worst symbols (15+ trades):** best TCS NS -160 (103), MARUTI NS -180 (91), NSEI -246 (117) | worst ITC NS -950 (93), ICICIBANK NS -810 (98), NSEBANK -753 (138)
-
-### SMC part: premium / discount half
-
-*Below 50% of the last swing range is bullish, above is bearish.*
-
-- **Overall (realistic option model):** 2042 trades, -486 Rs per trade, total -993115 Rs, profit factor 0.72, win rate 42%, max drawdown -1020702, worst day -27138.
-- **Best case, no time decay:** -62 Rs per trade, profit factor 0.96.
-- **The underlying itself:** -0.1 bps over the next hour, 50% of signals moved the right way (53728 signals).
-- **Calls (up) vs puts (down):** BUY CE: 1010 trades, -531 Rs (PF 0.70) | BUY PE: 1032 trades, -442 Rs (PF 0.74)
-- **Indices vs stocks:** indices: 38 trades, -646 Rs (PF 0.65) | stocks: 2004 trades, -483 Rs (PF 0.72)
-- **Time of day:** 10:15-11:30: 1298 trades, -392 Rs (PF 0.77) | 11:30-13:00: 326 trades, -585 Rs (PF 0.67) | 13:00-14:30: 418 trades, -703 Rs (PF 0.62)
-- **By year:** 2024: 174 trades, -325 Rs (PF 0.80) | 2025: 881 trades, -617 Rs (PF 0.66) | 2026: 987 trades, -398 Rs (PF 0.77)
-- **Best / worst symbols (15+ trades):** best INFY NS 17 (277), SBIN NS -191 (68), TCS NS -237 (54) | worst ICICIBANK NS -908 (208), MARUTI NS -844 (141), ITC NS -737 (166)
-
-### Sweep then CHoCH
-
-*A liquidity sweep, then a change of character the other way; entered on that candle or the pullback.*
-
-- **Overall (realistic option model):** 630 trades, -329 Rs per trade, total -207252 Rs, profit factor 0.80, win rate 45%, max drawdown -222162, worst day -15060.
-- **Best case, no time decay:** 76 Rs per trade, profit factor 1.05.
-- **The underlying itself:** 1.5 bps over the next hour, 50% of signals moved the right way (876 signals).
-- **Calls (up) vs puts (down):** BUY CE: 325 trades, -467 Rs (PF 0.73) | BUY PE: 305 trades, -182 Rs (PF 0.89)
-- **Indices vs stocks:** indices: 97 trades, 448 Rs (PF 1.35) | stocks: 533 trades, -470 Rs (PF 0.73)
-- **Time of day:** 10:15-11:30: 287 trades, -527 Rs (PF 0.70) | 11:30-13:00: 171 trades, -243 Rs (PF 0.85) | 13:00-14:30: 172 trades, -85 Rs (PF 0.95)
-- **By year:** 2024: 44 trades, -969 Rs (PF 0.51) | 2025: 304 trades, -291 Rs (PF 0.82) | 2026: 282 trades, -270 Rs (PF 0.83)
-- **Best / worst symbols (15+ trades):** best NSEI 584 (40), NSEBANK 353 (57), BHARTIARTL NS 143 (38) | worst LT NS -1125 (54), AXISBANK NS -1055 (49), TCS NS -961 (38)
-
-### Sweep then CHoCH: on the CHoCH candle
-
-*The same, entered only on the change-of-character candle.*
-
-- **Overall (realistic option model):** 392 trades, -351 Rs per trade, total -137748 Rs, profit factor 0.79, win rate 44%, max drawdown -149676, worst day -9036.
-- **Best case, no time decay:** 46 Rs per trade, profit factor 1.03.
-- **The underlying itself:** 1.8 bps over the next hour, 49% of signals moved the right way (359 signals).
-- **Calls (up) vs puts (down):** BUY CE: 199 trades, -482 Rs (PF 0.72) | BUY PE: 193 trades, -217 Rs (PF 0.87)
-- **Indices vs stocks:** indices: 61 trades, 624 Rs (PF 1.53) | stocks: 331 trades, -531 Rs (PF 0.70)
-- **Time of day:** 10:15-11:30: 111 trades, -636 Rs (PF 0.65) | 11:30-13:00: 122 trades, -310 Rs (PF 0.81) | 13:00-14:30: 159 trades, -185 Rs (PF 0.88)
-- **By year:** 2024: 31 trades, -1272 Rs (PF 0.41) | 2025: 186 trades, -305 Rs (PF 0.82) | 2026: 175 trades, -238 Rs (PF 0.85)
-- **Best / worst symbols (15+ trades):** best NSEI 984 (21), NSEBANK 435 (40), BHARTIARTL NS 413 (28) | worst LT NS -1334 (25), AXISBANK NS -1078 (31), TCS NS -832 (22)
-
-### Sweep then CHoCH: on the pullback
-
-*The same, entered only on the pullback into the order block / gap.*
-
-- **Overall (realistic option model):** 368 trades, -422 Rs per trade, total -155370 Rs, profit factor 0.75, win rate 43%, max drawdown -172962, worst day -9036.
-- **Best case, no time decay:** 10 Rs per trade, profit factor 1.01.
-- **The underlying itself:** 1.3 bps over the next hour, 51% of signals moved the right way (517 signals).
-- **Calls (up) vs puts (down):** BUY CE: 197 trades, -639 Rs (PF 0.65) | BUY PE: 171 trades, -173 Rs (PF 0.89)
-- **Indices vs stocks:** indices: 45 trades, 185 Rs (PF 1.13) | stocks: 323 trades, -507 Rs (PF 0.71)
-- **Time of day:** 10:15-11:30: 188 trades, -429 Rs (PF 0.75) | 11:30-13:00: 114 trades, -330 Rs (PF 0.80) | 13:00-14:30: 66 trades, -560 Rs (PF 0.69)
-- **By year:** 2024: 23 trades, -927 Rs (PF 0.53) | 2025: 175 trades, -340 Rs (PF 0.80) | 2026: 170 trades, -438 Rs (PF 0.75)
-- **Best / worst symbols (15+ trades):** best RELIANCE NS 547 (32), NSEI 257 (22), TATASTEEL NS 199 (28) | worst TCS NS -1709 (23), ITC NS -1299 (21), ICICIBANK NS -1014 (21)
-
-### Sweep then CHoCH with a displacement candle
-
-*The same, and the change-of-character candle must be a displacement.*
-
-- **Overall (realistic option model):** 169 trades, -529 Rs per trade, total -89448 Rs, profit factor 0.70, win rate 41%, max drawdown -98394, worst day -6024.
-- **Best case, no time decay:** -86 Rs per trade, profit factor 0.94.
-- **The underlying itself:** -1.8 bps over the next hour, 48% of signals moved the right way (232 signals).
-- **Calls (up) vs puts (down):** BUY CE: 90 trades, -814 Rs (PF 0.57) | BUY PE: 79 trades, -205 Rs (PF 0.87)
-- **Indices vs stocks:** indices: 21 trades, -443 Rs (PF 0.74) | stocks: 148 trades, -541 Rs (PF 0.69)
-- **Time of day:** 10:15-11:30: 98 trades, -688 Rs (PF 0.63) | 11:30-13:00: 38 trades, -804 Rs (PF 0.58) | 13:00-14:30: 33 trades, 257 Rs (PF 1.19)
-- **By year:** 2024: 9 trades (too few) | 2025: 86 trades, -433 Rs (PF 0.75) | 2026: 74 trades, -501 Rs (PF 0.71)
+- **Overall (realistic option model):** 2120 trades, -511 Rs per trade, total -1084195 Rs, profit factor 0.71, win rate 42%, max drawdown -1104546, worst day -30210.
+- **Best case, no time decay:** -70 Rs per trade, profit factor 0.95.
+- **The underlying itself:** 0.7 bps over the next hour, 50% of signals moved the right way (78384 signals).
+- **Calls (up) vs puts (down):** BUY CE: 1109 trades, -510 Rs (PF 0.71) | BUY PE: 1011 trades, -513 Rs (PF 0.71)
+- **Indices vs stocks:** indices: 10 trades (too few) | stocks: 2110 trades, -514 Rs (PF 0.71)
+- **Time of day:** 10:15-11:30: 1323 trades, -473 Rs (PF 0.73) | 11:30-13:00: 351 trades, -416 Rs (PF 0.76) | 13:00-14:30: 446 trades, -700 Rs (PF 0.62)
+- **By year:** 2024: 184 trades, -276 Rs (PF 0.83) | 2025: 900 trades, -681 Rs (PF 0.63) | 2026: 1036 trades, -406 Rs (PF 0.76)
+- **Best / worst symbols (15+ trades):** best BHARTIARTL NS -366 (377), INFY NS -389 (409), RELIANCE NS -390 (16) | worst MARUTI NS -661 (51), LT NS -644 (81), AXISBANK NS -627 (377)
 
 ### Support / resistance (all three setups)
 

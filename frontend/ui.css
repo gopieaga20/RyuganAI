@@ -933,3 +933,46 @@ html, body, .app, .layout, .main { background: var(--page); }
 .lv-btn-on, .lv-btn-send { background: var(--sell-bg); color: var(--sell-tx); }
 .as-check{display:flex;flex-direction:row;align-items:center;gap:8px;font-size:11px;color:var(--tx-3)}
 .as-check input{width:auto;height:auto}
+
+/* ═══ login / register screen ═══ */
+.auth-gate { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto;
+  background: radial-gradient(1200px 700px at 20% 10%, rgba(125, 211, 252, .12), transparent 60%), var(--bg); }
+.auth-card { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 16px; padding: 26px 24px 22px; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); }
+.auth-logo { display: block; width: 52px; height: 52px; margin: 0 auto 8px; }
+.auth-brand { text-align: center; font-weight: 800; letter-spacing: .14em; font-size: 17px; color: var(--tx); margin-bottom: 16px; }
+.auth-brand b { color: #7dd3fc; margin-left: 4px; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+.auth-tab { background: transparent; border: 0; color: var(--tx-2); font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 6px; border-radius: 8px; cursor: pointer; }
+.auth-tab.active { background: var(--surface-3); color: var(--tx); }
+.auth-note { font-size: 12px; line-height: 1.5; color: var(--tx-2); margin: 0 0 12px; min-height: 18px; }
+.auth-field { display: block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--tx-3); margin-bottom: 10px; }
+.auth-field input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; font-size: 14px; text-transform: none; letter-spacing: 0; padding: 10px 12px; }
+.auth-hint { font-size: 11px; color: var(--tx-3); margin: -4px 0 8px; }
+.auth-err { min-height: 18px; font-size: 12px; color: var(--down); margin-bottom: 8px; }
+.auth-submit { width: 100%; padding: 11px; font-size: 14px; }
+
+/* ═══ profile menu and page ═══ */
+.pf-wrap { position: relative; display: inline-flex; }
+.pf-avatar { font-weight: 800; font-size: 13px; text-transform: uppercase; }
+.pf-menu { position: absolute; right: 0; top: calc(100% + 8px); min-width: 210px; z-index: 500; background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; padding: 6px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35); }
+.pf-menu-head { padding: 8px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; display: flex; flex-direction: column; gap: 2px; }
+.pf-menu-head b { font-size: 13px; color: var(--tx); }
+.pf-menu-head span { font-size: 11px; color: var(--tx-3); word-break: break-all; }
+.pf-menu button { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--tx-2); font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.pf-menu button:hover { background: var(--surface-2); color: var(--tx); }
+.pf-menu .pf-signout { color: var(--down); }
+.pf-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.pf-tab { background: var(--surface); border: 1px solid var(--line); color: var(--tx-2); font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 999px; cursor: pointer; }
+.pf-tab.active { background: var(--surface-3); border-color: var(--accent); color: var(--tx); }
+.pf-grid label { text-transform: none; }
+.pf-strat-sum { margin: 10px 0 4px; color: var(--tx-2); }
+.pf-strat-sum.bad { color: var(--down); }
+.pf-strat-table td:first-child { width: 64px; }
+.pf-strat-table tr.off td:not(:first-child) { opacity: .5; }
+.pf-ai-row { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px; background: var(--surface-2); }
+.pf-ai-row .pf-ai-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.pf-ai-row .pf-ai-head b { font-size: 13px; }
+.pf-ai-row .pf-ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; align-items: end; }
+.pf-ai-row label { font-size: 11px; color: var(--tx-3); display: flex; flex-direction: column; gap: 4px; }
+.pf-ai-row .pf-ai-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+.pf-live-confirm { margin: 8px 0; }

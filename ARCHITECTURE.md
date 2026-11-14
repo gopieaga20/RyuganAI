@@ -41,7 +41,7 @@ deploy_ubuntu.sh             Deployment script
 - **Yahoo proxy** (`/api/yahoo/search`, `/api/yahoo-chart/{symbol}`): search autosuggest + OHLC chart data; for `range=1d|2d` it tries Angel One first (`get_angel_quote`) before falling back to Yahoo.
 - **News proxy** (`/api/news`): scrapes Google News RSS per symbol, 15-min in-memory cache.
 
-No auth on any endpoint. CORS is wide open (`allow_origins=["*"]`).
+Login: every `/api/*` call needs a session cookie (see "Login and Profile" below). CORS allows only `ALLOWED_ORIGINS`.
 
 ## Angel One integration (`backend/angel_broker.py`)
 
@@ -87,7 +87,7 @@ Single file organized into comment-delimited modules, driven by tab navigation (
 ## Notable design choices / risks
 
 - **Anthropic API key lives client-side** and calls go straight from the browser to `api.anthropic.com` — the key is visible to anyone with devtools access to that browser tab (mitigated only by `sessionStorage` + tab-close clearing). There is no backend proxy for AI calls.
-- **No authentication anywhere** — paper trading endpoints and the Angel One broker session are shared/global, not per-user.
+- **One owner, one portfolio** — login protects the app, but paper trading, the auto-trader and the broker sessions are still shared/global, not per-user.
 - **CORS is `*`** and DB credentials in `backend/.env` (currently tracked as modified in git status — verify it isn't committed with real secrets).
 - Angel One session/master-contract are process-level singletons — fine for single-instance deployment, not safe for multi-worker/horizontal scaling without external session storage.
 
@@ -124,11 +124,23 @@ Upstox setup: create the app, set the Redirect URL to UPSTOX_REDIRECT_URI, regis
 ## Theme and tiles
 Tokens live in the "white + midnight cyan" block of frontend/ui.css (dark: midnight cyan #0A2A33 primary, white secondary; light: white primary, midnight cyan secondary; --brand/--on-brand carry the button swap). Every data-table row (table.dtbl, table.scan-table) is drawn as a tile by the "tiles" block in ui.css; js/tiles.js stamps data-label (column name) and data-tone (profit/loss) on cells. Add class keep-table to a table that must stay a real table (the per-stock settings table and the option chain do).
 
-## Smart money concepts (SMC)
-frontend/js/smc.js (ported to backend/strategy_vote.py, parity-tested on every bar): structure bias + an order block, fair-value-gap or liquidity-sweep point of interest, taken in the discount (long) or premium (short) half of the last swing range. It is a weight-2 vote in the strategy vote, so a BUY CE / BUY PE (ATM) call now needs the SMC setup to agree to reach 85% confidence. tools/bt_strategies.mjs backtests every strategy alone and in combinations and writes reports/strategy_backtest_report.md (2 years, 14 symbols, modelled option prices): no strategy beats a random-direction yardstick.
-SMC update: the vote uses the displacement variant (the structure break behind the setup must be a big one-directional candle); frontend/js/smc.js also has sweepChoch (liquidity sweep then change of character). Both were backtested in reports/strategy_backtest_report.md (sections 2b and 4); neither survives a correction for the number of strategies tried.
+## Smart money concepts (SMC): a port of "Smart Money Concepts [LuxAlgo]"
+`frontend/js/smc.js` is a port of the LuxAlgo TradingView indicator (c) LuxAlgo, licensed **CC BY-NC-SA 4.0**: keep the attribution, non-commercial use only, and share any derivative under the same licence.
+`backend/strategy_vote.py` (`build_smc`) is the Python twin; `backend/tests/test_strategy_parity.py` compares events, order blocks, gaps, equal highs/lows, trailing range, both trends and the vote bar by bar (`frontend/tests/dump_smc.mjs`).
+- **Ported with the indicator's defaults:** legs/pivots (swing size 50, internal 5, equal H/L 3; a pivot is registered when the leg flips), BOS/CHoCH on a close through the latest pivot (internal and swing trends), order blocks
+  (extreme bar between the broken pivot and the break, after the 2 x ATR(200) volatility filter; mitigated when price trades through the far side; 100 kept), equal highs/lows (0.1 x ATR(200)), fair value gaps (auto threshold,
+  the indicator's own removal rules), trailing swing range (equilibrium = midpoint). Where Pine compares with `na` it is treated as "different".
+- **The vote is this app's rule on top** (the indicator draws, it gives no signal): internal trend up/down, swing trend not opposed, an unmitigated order block of that direction tapped by a candle closing in the direction,
+  price in the discount (long) or premium (short) half of the swing range. The old sweep / displacement / sweep-to-CHoCH variants and their chart overlays were removed with the old code (they are in git history).
+- **History needed:** ATR(200) and the 50-bar swing size want a few hundred bars, so the auto-trader and scanner now load the 15-minute series for **1 month** (about 520 bars) instead of 5 days.
+- **Chart overlays:** SMC structure (swing BOS/CHoCH big, internal small), Order blocks (5 newest internal thin + 5 newest swing thick, only inside the visible price range), Equal highs/lows, Premium / discount (strong/weak high and low and the equilibrium).
+  The separate "Structure BOS / CHoCH" and "FVG retest" strategy votes still use the older `smc-structure.js` rules.
+- **Backtest of the new vote** (`node tools/bt_strategies.mjs each`, 2 years of 15m, modelled options): 111 trades, -690 Rs per trade, profit factor 0.63, 48% of signals moved the right way. No edge, and too few trades to say more.
+- **Other rules on the LuxAlgo outputs** (`node tools/bt_strategies.mjs smc-rules`, rules in `tools/smc_rules.mjs`, report `reports/smc_rules_report.md`): 11 rules x (alone, + VWAP, + higher-timeframe trend) = 33 variants (CHoCH/BOS then order block, swing-only, block + gap, equal highs/lows swept, break-and-retest, discount/premium). None was profitable in both halves of the period and none passed the multiple-testing check, so the live vote is unchanged.
+- **SMC combined with the other strategies** (`node tools/bt_strategies.mjs smc-combos`, report `reports/smc_combinations_report.md`): SMC (and a looser version without the discount/premium rule) with each other strategy, with pairs of them, and as a weight-2 vote in the live six-strategy score: 70 variants, none profitable in both halves, none passing the multiple-testing check.
+
 Support / resistance (frontend/js/sr.js, ported to backend/strategy_vote.py, parity-tested on every bar): previous day high/low/close and swing levels; breakout, break-and-retest and rejection setups. It is shown in the strategy check and as chart lines but has weight 0 because the backtest found it does not help the vote.
-Chart overlays for the smart-money rules (frontend/js/chart-view.js): Order blocks (sky blue = bullish, orange = bearish, unmitigated only), Liquidity sweeps, Displacement candles, Sweep to CHoCH. They use the same functions as the strategy (frontend/js/smc.js), so the chart shows exactly what the vote sees.
+
 
 ## Outcome log (backend/outcomes.py)
 Every BUY CE / BUY PE call the scanner makes is stored in `signal_outcomes` (traded or not, with the vote snapshot, ATR, ADX). Once the trading day is over
@@ -145,3 +157,21 @@ changes settings by itself. The Live nav button is hidden (the page and #/live s
 - News vote: the stock's own Google News headlines from the last 24 hours only (`symbol_only=True`), whole-word keyword
   matching shared by `autotrader.news_label` and `frontend/js/news.js` (tests in both). The news label is stored in the outcome log.
 - NSE event calendar (`nse_client.get_event_calendar`, cached 6h): no auto entry on a stock's board-meeting / results day.
+
+
+## Login and Profile (backend/auth.py, account.py, crypto.py, ai_providers.py; frontend js/auth.js, profile.js, strategy-prefs.js)
+- **Owner login.** The first account to register becomes the owner; later sign-ups are refused unless the owner opens them (Profile > Account). Passwords: scrypt. Sessions: random token in an
+  httpOnly SameSite=Lax cookie (Secure behind https), only its SHA-256 stored, 14-day sliding expiry; logout and a password change revoke sessions. Login is rate-limited (5 bad tries per
+  email / 20 per IP per 15 minutes). Lost password: `python auth.py reset-password you@example.com` in `backend/`.
+- **Enforcement.** One middleware (`require_login` in main.py) answers 401 for every `/api/*` route except `/api/health`, `/api/auth/status|login|register` and the broker OAuth callback.
+  State-changing calls also need the `X-Requested-With: ryugan` header and an Origin of this site (CSRF). `/ws/prices` checks the cookie itself and closes with 1008. A test walks every
+  route and fails if a new `/api` route is neither listed public nor protected. `AUTH_REQUIRED=0` switches login off (tests set it in `tests/conftest.py`).
+- **Frontend.** `auth.js` is imported first: it wraps `window.fetch` (adds the cookie and header to same-site `/api` calls, shows the login screen on a 401), so no other module changed.
+  The app only starts after `requireLogin()` resolves.
+- **Profile settings** live in `app_settings` under `profile.*`: `signups_open`, `strategies_enabled`, `live_allowed`, `ai_provider`, `ai_models`. Strategy toggles: `strategy_vote.evaluate(..., disable=ids)` and
+  `strategies.js evaluate({disable})` leave those ids out of the vote (parity-tested); the auto-trader reads the list from `Deps.disabled_strategies` on every scan, the dashboard, chart and scanner pass
+  `getDisabled()`. The toggle list is refused unless the remaining weights can still reach a call (sum >= 3). `live_allowed` (default off, needs the account password to switch on) is the real
+  gate on `/api/live/enable`; the Live page and its menu button appear only when it is on.
+- **AI keys.** Anthropic, OpenAI or Gemini keys are encrypted with `APP_SECRET_KEY` (Fernet) in `ai_keys`, shown only as the last 4 characters, never returned. `/api/ai/chat` uses the active provider's key
+  (Anthropic falls back to `ANTHROPIC_API_KEY` in `.env`). A provider's own 401 is reported as 502 so the browser never mistakes it for a lost login.
+- **Env:** `APP_SECRET_KEY` (required to save AI keys), `AUTH_REQUIRED` (default 1), `OWNER_EMAIL` (optional: only this address may create the owner account). In production nginx basic auth still sits in front.

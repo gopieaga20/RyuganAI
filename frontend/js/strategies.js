@@ -6,7 +6,7 @@
  * These are classic rules; backtests of them have NOT shown a proven edge, so the UI labels calls as unproven. */
 import { Indicators } from './indicators.js';
 import { buildStructure, fvgRetest } from './smc-structure.js';
-import { smcWithDisplacement } from './smc.js';
+import { smcSignal } from './smc.js';
 import { srSignal } from './sr.js';
 import { vwapIst } from './candles.js';
 
@@ -17,7 +17,7 @@ export const STRATEGIES = [
   { id: 'structure', name: 'Structure BOS / CHoCH', weight: 2 },
   { id: 'fvg',       name: 'FVG retest',           weight: 1 },
   { id: 'volume',    name: 'Volume push',          weight: 1 },
-  { id: 'smc',       name: 'Smart money (SMC + displacement)', weight: 2 },
+  { id: 'smc',       name: 'Smart money (SMC, LuxAlgo port)', weight: 2 },
   // Support / resistance is SHOWN but carries weight 0: backtests (reports/strategy_backtest_report.md, section 2c) found that forcing it into the vote made results worse.
   { id: 'sr',        name: 'Support / resistance (previous day high-low)', weight: 0 },
   { id: 'news',      name: 'News sentiment',       weight: 1 },
@@ -95,9 +95,9 @@ export function evaluate(candles, opts = {}) {
   else if (c.v > 1.5 * vAvg && c.c < c.o) add('volume', -1, `Down candle on ${(c.v / vAvg).toFixed(1)}x average volume`);
   else add('volume', 0, 'Volume is ordinary');
 
-  // 7. smart money concepts: an order block, gap or liquidity sweep in the direction of the structure, taken in the discount (long) or premium (short) half,
-  //    and the structure break behind it must have been a displacement candle (a big one-directional candle)
-  const sm = smcWithDisplacement(candles, S, i, opts.swingK || 3);
+  // 7. smart money concepts (port of LuxAlgo's indicator, see smc.js): internal trend up/down, an unmitigated order block tapped by a candle in that
+  //    direction, price in the discount (long) or premium (short) half of the swing range. Skipped (and not computed) when switched off in Profile.
+  const sm = off.has('smc') ? { vote: 0, reason: 'switched off' } : smcSignal(candles);
   add('smc', sm.vote, sm.reason);
 
   // 8. support / resistance: previous-day high / low and swing levels (intraday only: previous-session levels mean nothing on daily candles)
@@ -114,11 +114,12 @@ export function evaluate(candles, opts = {}) {
   const maxScore = votes.reduce((a, v) => a + v.weight, 0);
   const minAdx = opts.minAdx ?? MIN_ADX, callScore = opts.callScore ?? CALL_SCORE;
   let call = 'WAIT', why = '';
-  if (adx < minAdx) why = `ADX ${adx.toFixed(0)} is below ${minAdx}: range-bound, no call`;
+  if (maxScore <= 0) why = 'No strategy with a vote weight is switched on';
+  else if (adx < minAdx) why = `ADX ${adx.toFixed(0)} is below ${minAdx}: range-bound, no call`;
   else if (score >= callScore) call = 'BUY CE';
   else if (score <= -callScore) call = 'BUY PE';
   else why = `Votes are mixed (score ${score > 0 ? '+' : ''}${score} of ±${maxScore})`;
-  const confidence = call === 'WAIT' ? Math.round(30 + 20 * Math.abs(score) / maxScore) : Math.min(95, Math.round(50 + 45 * Math.abs(score) / maxScore));
+  const confidence = maxScore <= 0 ? 0 : call === 'WAIT' ? Math.round(30 + 20 * Math.abs(score) / maxScore) : Math.min(95, Math.round(50 + 45 * Math.abs(score) / maxScore));
 
   const dir = call === 'BUY CE' ? 1 : call === 'BUY PE' ? -1 : (score >= 0 ? 1 : -1);
   const levels = { entry: price, sl: price - dir * 1.5 * atr, t1: price + dir * 2 * atr, t2: price + dir * 3.5 * atr, atr };

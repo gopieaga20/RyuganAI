@@ -262,6 +262,7 @@ class Deps:
     get_lot_size: Callable[[str], Optional[int]]
     fetch_ltp: Callable[[str], Awaitable[Optional[float]]]
     fetch_events: Optional[Callable[[dt.date], Awaitable[dict]]] = None   # date -> {underlying: purpose} (board meetings, results)
+    disabled_strategies: Optional[list] = None                            # strategy ids the owner switched off in Profile > Strategies
 
 
 class Store:
@@ -284,15 +285,19 @@ class Store:
 async def scan_symbol(sym: str, deps: Deps) -> dict:
     key = underlying_of(sym) or re.sub(r"\s+", "", sym.upper())
     try:
+        off = deps.disabled_strategies or []
+
+        async def no_news():
+            return []
         c15, c5, heads = await asyncio.gather(
-            deps.fetch_candles(sym, "15m", "5d"), deps.fetch_candles(sym, "5m", "5d"),
-            deps.fetch_headlines(key), return_exceptions=True)
+            deps.fetch_candles(sym, "15m", "1mo"), deps.fetch_candles(sym, "5m", "5d"),
+            no_news() if "news" in off else deps.fetch_headlines(key), return_exceptions=True)
         if isinstance(c15, Exception) or len(c15) < 60:
             return {"sym": sym, "ok": False, "call": "WAIT", "confidence": 0,
                     "note": f"no usable 15m data ({c15 if isinstance(c15, Exception) else len(c15)})"}
         label = news_label(heads) if not isinstance(heads, Exception) else None
-        r15 = sv.evaluate(c15, intraday=True, news_label=label)
-        r5 = sv.evaluate(c5, intraday=True) if not isinstance(c5, Exception) and len(c5) >= 60 else None
+        r15 = sv.evaluate(c15, intraday=True, news_label=label, disable=off)
+        r5 = sv.evaluate(c5, intraday=True, disable=off) if not isinstance(c5, Exception) and len(c5) >= 60 else None
         fin = sv.combine(r15, r5)
         fin["sym"] = sym
         fin["candle_ts"] = c15[-1]["ts"]

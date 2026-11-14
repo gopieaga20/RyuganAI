@@ -1,124 +1,106 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pivots, orderBlockOf, orderBlockRetest, liquiditySweep, premiumDiscount, smcSignal, isDisplacement, sweepChoch, smcWithDisplacement } from '../js/smc.js';
-import { buildStructure } from '../js/smc-structure.js';
+import { buildSmc, smcSignal, SWING_SIZE, INTERNAL_SIZE } from '../js/smc.js';
 
-const C = (o, h, l, c, i = 0) => ({ ts: i * 900000, o, h, l, c, v: 1000 });
-
-test('a pivot is only used k bars after it forms', () => {
-  const cs = [10, 11, 12, 15, 12, 11, 10, 9, 8].map((h, i) => C(h - 1, h, h - 2, h - 1, i));      // peak at index 3
-  assert.equal(pivots(cs, 5, 3).length, 0);                                                          // not confirmed yet (needs bar 6)
-  const p = pivots(cs, 6, 3);
-  assert.deepEqual(p.filter(x => x.type === 'H').map(x => [x.idx, x.price]), [[3, 15]]);
-});
-
-test('liquidity sweep: a wick below the last swing low that closes back above is bullish, the mirror is bearish', () => {
-  const pv = [{ idx: 5, price: 100, type: 'L' }, { idx: 8, price: 120, type: 'H' }];
-  const cs = [];
-  cs[20] = C(100.5, 101.5, 98, 101);          // took 100, closed back above, long lower wick
-  assert.equal(liquiditySweep(cs, pv, 20), 1);
-  cs[21] = C(100.5, 101.5, 98, 99.5);         // closed below the swing low: that is a breakdown, not a sweep
-  assert.equal(liquiditySweep(cs, pv, 21), 0);
-  cs[22] = C(119.5, 122, 118.5, 119);         // took 120, closed back below, long upper wick
-  assert.equal(liquiditySweep(cs, pv, 22), -1);
-  cs[23] = C(110, 111, 109, 110.5);           // nothing taken
-  assert.equal(liquiditySweep(cs, pv, 23), 0);
-});
-
-test('premium / discount splits the last swing range at 50% and is silent outside it', () => {
-  const pv = [{ idx: 1, price: 100, type: 'L' }, { idx: 4, price: 120, type: 'H' }];
-  const at = p => premiumDiscount([C(p, p, p, p)], pv, 0).zone;
-  assert.equal(at(105), 1);       // discount
-  assert.equal(at(115), -1);      // premium
-  assert.equal(at(110), 0);       // equilibrium
-  assert.equal(at(130), 0);       // outside the range
-  assert.equal(premiumDiscount([C(1, 1, 1, 1)], [], 0).zone, 0);
-});
-
-test('order block: the last bearish candle at the origin of an up-move that broke structure', () => {
-  const cs = [C(10, 10.5, 9.5, 10, 0), C(10, 10.2, 9.0, 9.2, 1) /* bearish origin */, C(9.2, 10.5, 9.1, 10.4, 2), C(10.4, 11.5, 10.3, 11.4, 3), C(11.4, 12.5, 11.3, 12.4, 4)];
-  const ob = orderBlockOf(cs, 4, 'LONG');
-  assert.ok(ob && ob.idx === 1 && ob.bottom === 9.0 && ob.top === 10.2);
-  assert.equal(orderBlockOf([C(10, 11, 9, 10.8, 0), C(10.8, 12, 10.5, 11.9, 1)], 1, 'LONG'), null);   // no bearish candle to use
-});
-
-test('order block retest needs an unmitigated block and a rejection candle', () => {
-  const base = [C(10, 10.5, 9.5, 10, 0), C(10, 10.2, 9.0, 9.2, 1), C(9.2, 10.5, 9.1, 10.4, 2), C(10.4, 11.5, 10.3, 11.4, 3), C(11.4, 12.5, 11.3, 12.4, 4)];
-  const S = { events: [null, null, null, null, { type: 'BOS', dir: 'LONG', level: 11 }, null, null], trend: [], fvgs: [] };
-  const tap = [...base, C(12.4, 12.6, 11, 11.8, 5), C(10.0, 11, 9.8, 10.9, 6)];     // dips into 9.0-10.2 and closes back up as a bullish candle
-  assert.ok(orderBlockRetest(tap, S, 6, 'LONG'));
-  const broke = [...base, C(12, 12, 8, 8.5, 5), C(8.5, 10.4, 8.4, 10.3, 6)];        // a close below 9.0 mitigated the block
-  assert.equal(orderBlockRetest(broke, S, 6, 'LONG'), null);
-  const noReject = [...base, C(12.4, 12.6, 12.0, 12.3, 5), C(12.3, 12.4, 12.0, 12.2, 6)];   // never came back to the block
-  assert.equal(orderBlockRetest(noReject, S, 6, 'LONG'), null);
-});
-
-function walk(n, seed = 7) {
-  let x = seed, p = 100; const out = [];
-  const rnd = () => { x = (x * 1664525 + 1013904223) % 4294967296; return x / 4294967296; };
-  for (let i = 0; i < n; i++) { const o = p, d = (rnd() - 0.48) * 1.2, c = o + d; out.push({ ts: i * 900000, o, h: Math.max(o, c) + rnd() * 0.4, l: Math.min(o, c) - rnd() * 0.4, c, v: 1000 }); p = c; }
+const T0 = 1767584100000;
+/** Candles that follow a path of closes (each leg is a straight line), with a small wick on each side. */
+function path(points, wick = 0.2) {
+  const closes = [points[0][0]];
+  for (let k = 1; k < points.length; k++) {
+    const [to, bars] = points[k], from = closes[closes.length - 1];
+    for (let b = 1; b <= bars; b++) closes.push(from + (to - from) * b / bars);
+  }
+  return closes.map((c, i) => {
+    const o = i ? closes[i - 1] : c;
+    return { ts: T0 + i * 900000, o, h: Math.max(o, c) + wick, l: Math.min(o, c) - wick, c, v: 1000 };
+  });
+}
+function rng(seed) { let s = seed; return () => (s = s * 16807 % 2147483647) / 2147483647; }
+function regime(n, seed) {
+  const r = rng(seed); const out = []; let prev = 100, drift = 0;
+  for (let i = 0; i < n; i++) {
+    if (i % 90 === 0) drift = (r() - 0.5) * 0.6;
+    const spike = r() < 0.02 ? 4 : 1, c = prev + drift + (r() - 0.5) * 1.4 * spike;
+    out.push({ ts: T0 + i * 900000, o: prev, h: Math.max(prev, c) + r() * 0.5 * spike, l: Math.min(prev, c) - r() * 0.5 * spike, c, v: 1000 });
+    prev = c;
+  }
   return out;
 }
 
-test('the SMC reading never looks into the future', () => {
-  const cs = walk(400);
-  for (const i of [120, 200, 301, 399]) {
-    const full = smcSignal(cs, buildStructure(cs, 3), i);
-    const cut = cs.slice(0, i + 1), part = smcSignal(cut, buildStructure(cut, 3), i);
-    assert.deepEqual(full.parts, part.parts);
-    assert.equal(full.vote, part.vote);
-  }
+test('the indicator defaults are the LuxAlgo ones', () => {
+  assert.equal(SWING_SIZE, 50); assert.equal(INTERNAL_SIZE, 5);
 });
 
-test('a vote needs bias, a point of interest AND the right half of the range; the reason always explains', () => {
-  const cs = walk(600, 11); let votes = 0, bull = 0, bear = 0;
-  const S = buildStructure(cs, 3);
-  for (let i = 60; i < cs.length; i++) {
-    const r = smcSignal(cs, S, i);
-    assert.ok(typeof r.reason === 'string' && r.reason.length > 5);
-    if (r.vote) {
-      votes++; r.vote > 0 ? bull++ : bear++;
-      assert.equal(r.vote, r.parts.bias);                         // always with the structure
-      assert.equal(r.parts.pd, r.vote);                           // longs in discount, shorts in premium
-      assert.ok(r.parts.ob === r.vote || r.parts.fvg === r.vote || r.parts.sweep === r.vote);
+test('a close through the latest pivot is a BOS with the trend and a CHoCH against it', () => {
+  // up, pull back, up through the first high (BOS), then a collapse through the last low (CHoCH)
+  const cs = path([[100], [112, 18], [104, 10], [118, 16], [96, 24]]);
+  const r = buildSmc(cs);
+  const internal = r.events.filter(e => e.internal);
+  assert.ok(internal.length >= 2, JSON.stringify(internal));
+  const firstUp = internal.find(e => e.dir === 'LONG');
+  assert.equal(firstUp.type, 'BOS');                                         // the first break has no trend to change
+  assert.ok(candlesBreak(cs, firstUp));
+  const down = internal.find(e => e.dir === 'SHORT' && e.i > firstUp.i);
+  assert.equal(down.type, 'CHoCH');                                          // against the trend that the up-break set
+  assert.equal(r.internalBias[down.i], -1);
+  assert.equal(r.internalBias[firstUp.i], 1);
+});
+
+/** A break event is a CLOSE beyond its level on that bar, and the bar before had not closed beyond it. */
+function candlesBreak(cs, e) {
+  const up = e.dir === 'LONG';
+  return (up ? cs[e.i].c > e.level : cs[e.i].c < e.level) && (up ? cs[e.i - 1].c <= e.level : cs[e.i - 1].c >= e.level);
+}
+
+test('every structure break is a close through its level, in a long random market', () => {
+  const cs = regime(900, 3), r = buildSmc(cs);
+  assert.ok(r.events.length > 10);
+  for (const e of r.events) assert.ok(candlesBreak(cs, e), JSON.stringify(e));
+  assert.ok(r.events.some(e => !e.internal), 'swing breaks (size 50) occur too');
+});
+
+test('an order block is the extreme bar between the broken pivot and the break, and is mitigated by trading through its far side', () => {
+  const cs = regime(900, 2), r = buildSmc(cs);
+  assert.ok(r.obs.length > 5 && r.obs.some(o => o.mitigatedAt !== null));
+  for (const ob of r.obs) {
+    assert.ok(ob.idx < ob.formedAt && ob.top >= ob.bottom);
+    if (ob.mitigatedAt !== null) {
+      const c = cs[ob.mitigatedAt];
+      assert.ok(ob.bias > 0 ? c.l < ob.bottom : c.h > ob.top, JSON.stringify(ob));
+      for (let q = ob.formedAt; q < ob.mitigatedAt; q++) assert.ok(ob.bias > 0 ? cs[q].l >= ob.bottom : cs[q].h <= ob.top);   // never touched before
     }
   }
-  assert.ok(votes < (cs.length - 60) * 0.5, 'SMC should be selective');
 });
 
-
-test('a displacement candle is a big one-directional body that closes near its extreme', () => {
-  const quiet = Array.from({ length: 14 }, (_, i) => C(100, 100.5, 99.5, 100.1, i));          // average range 1.0
-  const big = [...quiet, C(100, 102.4, 99.9, 102.3, 14)];                                      // body 2.3 closes near the high
-  assert.equal(isDisplacement(big, 14, 'LONG'), true);
-  assert.equal(isDisplacement(big, 14, 'SHORT'), false);
-  assert.equal(isDisplacement([...quiet, C(100, 102.4, 99.9, 100.6, 14)], 14, 'LONG'), false);  // small body
-  assert.equal(isDisplacement([...quiet, C(100, 103.5, 99.9, 101.9, 14)], 14, 'LONG'), false);  // closed off the high: not displacement
-  assert.equal(isDisplacement([...quiet, C(100, 100.2, 97.6, 97.7, 14)], 14, 'SHORT'), true);
-});
-
-test('sweep then change of character: selective, consistent and never looks ahead', () => {
-  const cs = walk(900, 5), S = buildStructure(cs, 3); let seen = 0;
-  for (let i = 80; i < cs.length; i += 1) {
-    const r = sweepChoch(cs, S, i);
-    if (!r.vote) continue;
-    seen++;
-    assert.ok(r.stage === 'choch' ? r.ageBars === 0 : r.ageBars > 0 && r.ageBars <= 8);
-    assert.ok(S.events.slice(Math.max(1, i - 8), i + 1).some(ev => ev && ev.type === 'CHoCH' && (ev.dir === 'LONG') === (r.vote > 0)));
-    if (i % 7 === 0) {
-      const cut = cs.slice(0, i + 1), part = sweepChoch(cut, buildStructure(cut, 3), i);
-      assert.equal(part.vote, r.vote);
-      assert.equal(part.stage, r.stage);
-    }
+test('it never looks at a bar that has not closed: results up to bar i do not change when later bars are added', () => {
+  const cs = regime(700, 1), full = buildSmc(cs);
+  for (const end of [300, 450, 600]) {
+    const part = buildSmc(cs.slice(0, end + 1));
+    assert.deepEqual([...part.votes], [...full.votes].slice(0, end + 1));
+    assert.deepEqual([...part.internalBias], [...full.internalBias].slice(0, end + 1));
+    assert.deepEqual([...part.swingBias], [...full.swingBias].slice(0, end + 1));
+    assert.deepEqual(part.events.filter(e => e.i <= end), full.events.filter(e => e.i <= end));
   }
-  assert.ok(seen < 900 * 0.1, 'rare setup');
 });
 
-test('the displacement filter can only remove SMC votes, never add or flip them', () => {
-  const cs = walk(900, 9), S = buildStructure(cs, 3);
-  for (let i = 80; i < cs.length; i++) {
-    const a = smcSignal(cs, S, i), b = smcWithDisplacement(cs, S, i);
-    assert.ok(b.vote === 0 || b.vote === a.vote);
-    if (b.vote) assert.equal(b.displaced, true);
+test('the SMC vote needs structure, an order block tap and the right half of the range, and says why when it does not vote', () => {
+  const r = buildSmc(regime(1100, 1));
+  assert.ok([...r.votes].some(v => v !== 0), 'the fixture produces votes');
+  assert.ok([...r.votes].every(v => v === 0 || v === 1 || v === -1));
+  for (let i = 0; i < r.votes.length; i++) {
+    if (!r.votes[i]) continue;
+    assert.equal(r.votes[i], r.internalBias[i]);                              // votes only in the direction of the internal trend
+    assert.notEqual(r.swingBias[i], -r.votes[i]);                             // never against the swing trend
+    const eq = (r.trailTop[i] + r.trailBottom[i]) / 2;
+    assert.ok(Number.isFinite(eq));                                           // and only once the swing range exists
   }
+  const none = smcSignal(path([[100], [100.05, 40]]));      // flat: no pivot, no break
+  assert.equal(none.vote, 0); assert.match(none.reason, /undecided/);
+  assert.equal(smcSignal([]).vote, 0);
+});
+
+test('the last-bar reading carries the explanation, earlier bars only the number', () => {
+  const cs = regime(900, 3), r = buildSmc(cs);
+  assert.equal(typeof r.last.reason, 'string'); assert.ok(r.last.reason.length > 0);
+  assert.equal(r.last.vote, r.votes[cs.length - 1]);
 });

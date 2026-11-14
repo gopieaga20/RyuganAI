@@ -40,7 +40,7 @@ export async function sendChat() {
 
     if (res.status === 503) {
       thinking.querySelector('.msg-bubble').textContent =
-        'AI Analyst is not configured on the server. Set ANTHROPIC_API_KEY in backend/.env to enable it.';
+        'AI Analyst is not configured on the server. Add an API key in Profile > AI API keys (or set ANTHROPIC_API_KEY in backend/.env).';
       return;
     }
     if (!res.ok) {

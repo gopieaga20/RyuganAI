@@ -6,6 +6,7 @@ import { ChartView, CHART_OVERLAYS } from './chart-view.js';
 import { CHART_TF } from './timeframes.js';
 import { Scanner, underlyingOf } from './scanner.js';
 import { evaluate } from './strategies.js';
+import { getDisabled } from './strategy-prefs.js';
 import { NewsFilter } from './news.js';
 import { computeChainStats } from './option-chain.js';
 import { executePaperTrade } from './paper-trading.js';
@@ -89,7 +90,7 @@ function renderStrategyPane() {
   const tf = CHART_TF.find(x => x.key === sel.tf) || CHART_TF[2];
   const scan = Scanner.results.get(sel.sym.toUpperCase());
   const vis = ChartView.visible();                         // in replay mode: only the candles shown so far
-  const chart = vis.length >= 60 ? evaluate(vis, { intraday: tf.intraday, news: sel.news?.headlines?.length ? sel.news.sentiment : null }) : null;
+  const chart = vis.length >= 60 ? evaluate(vis, { intraday: tf.intraday, news: sel.news?.headlines?.length ? sel.news.sentiment : null, disable: getDisabled() }) : null;
   ChartView.setLevels(chart?.ok && chart.call !== 'WAIT' ? chart.levels : null);
   if (scan?.ok && !ChartView.replaying) showCall(scan.call, scan.confidence, '15m + 5m');
   else if (chart?.ok) showCall(chart.call, chart.confidence, tf.label + (ChartView.replaying ? ' · replay' : ''));
@@ -212,6 +213,7 @@ export async function selectSymbol(sym, tf) {
 
 export function initDash() {
   if (!$('tab-dash')) return;
+  document.addEventListener('strategies-changed', () => { Scanner.run('strategies'); ChartView.refresh(); renderStrategyPane(); });   // Profile > Strategies changed
   // timeframe buttons
   $('ch-tf').innerHTML = CHART_TF.map(t => `<button data-tf="${t.key}" class="${t.key === sel.tf ? 'active' : ''}">${t.label}</button>`).join('');
   $('ch-tf').addEventListener('click', e => { const b = e.target.closest('button'); if (b) selectSymbol(sel.sym, b.dataset.tf); });

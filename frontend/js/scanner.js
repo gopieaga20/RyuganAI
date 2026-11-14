@@ -10,6 +10,7 @@ import { underlyingOf, sessionChange } from './scan-utils.js';
 
 export { underlyingOf, sessionChange };
 import { evaluate, combine } from './strategies.js';
+import { getDisabled } from './strategy-prefs.js';
 
 export const DEFAULT_UNIVERSE = ['NIFTY 50', 'BANK NIFTY', 'SENSEX', 'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS',
   'SBIN', 'TATASTEEL', 'AXISBANK', 'ITC', 'LT', 'BHARTIARTL', 'MARUTI'];
@@ -88,12 +89,13 @@ export const Scanner = (() => {
     const key = sym.toUpperCase();
     try {
       const [c15, c5, news] = await Promise.all([
-        fetchCandles(sym, '15m', '5d'), fetchCandles(sym, '5m', '5d'), NewsFilter.fetch(underlyingOf(sym).news).catch(() => null),
+        fetchCandles(sym, '15m', '1mo'), fetchCandles(sym, '5m', '5d'), NewsFilter.fetch(underlyingOf(sym).news).catch(() => null),
       ]);
       if (c15.length < 60) throw new Error(`only ${c15.length} candles of 15m data`);
       const nw = news && news.headlines?.length ? news.sentiment : null;
-      const r15 = evaluate(c15, { intraday: true, news: nw });
-      const r5 = c5.length >= 60 ? evaluate(c5, { intraday: true }) : null;
+      const off = getDisabled();
+      const r15 = evaluate(c15, { intraday: true, news: nw, disable: off });
+      const r5 = c5.length >= 60 ? evaluate(c5, { intraday: true, disable: off }) : null;
       const fin = combine(r15, r5);
       const out = {
         sym: key, ok: true, price: c15[c15.length - 1].c, changePct: sessionChange(c15),

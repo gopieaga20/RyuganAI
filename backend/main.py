@@ -54,6 +54,10 @@ import live_rules
 import live_exits
 import notify
 import outcomes
+import auth
+import account
+import crypto
+import ai_providers
 
 brokers.load_defaults()
 
@@ -103,7 +107,7 @@ async def lifespan(app: FastAPI):
     print("PostgreSQL pool closed.")
 
 
-async def _autotrade_deps() -> "autotrader.Deps":
+async def _autotrade_deps(pool=None) -> "autotrader.Deps":
     async def candles(sym, interval, rng):
         resp = await get_yahoo_chart(_to_price_symbol(sym), interval, rng)
         return autotrader.payload_to_candles(json.loads(resp.body))
@@ -127,7 +131,8 @@ async def _autotrade_deps() -> "autotrader.Deps":
         return get_lot_sizes().get(und)
 
     return autotrader.Deps(fetch_candles=candles, fetch_headlines=headlines, get_contracts=contracts,
-                           get_lot_size=lot, fetch_ltp=_fetch_ltp, fetch_events=events)
+                           get_lot_size=lot, fetch_ltp=_fetch_ltp, fetch_events=events,
+                           disabled_strategies=await account.disabled_strategies(pool) if pool is not None else None)
 
 
 _autotrade_state = {"last_run": None, "next_run": None, "running": False}
@@ -141,7 +146,7 @@ async def _run_autotrade_cycle(pool, dry=False, now=None):
     try:
         cfg = await autotrader.load_settings(pool)
         store = autotrader.PgStore(pool, _open_position)
-        out = await autotrader.run_cycle(store, cfg, await _autotrade_deps(), now=now, dry=dry)
+        out = await autotrader.run_cycle(store, cfg, await _autotrade_deps(pool), now=now, dry=dry)
         _autotrade_state["last_run"] = time.time()
         if not dry:
             await _notify_scan(pool, out)
@@ -177,7 +182,7 @@ async def _notify_scan(pool, rows: list):
 
 async def _alert_only_scan(pool, cfg):
     """Auto-trading is OFF: scan the universe, record every call in the outcome log, and send call alerts if they are on. Never orders anything."""
-    deps = await _autotrade_deps()
+    deps = await _autotrade_deps(pool)
     sem = asyncio.Semaphore(4)
 
     async def one(s):
@@ -609,6 +614,7 @@ async def _ensure_schema(pool: asyncpg.Pool):
             )
         """)
         await outcomes.ensure_schema(conn)
+        await auth.ensure_schema(conn)
         await conn.execute("ALTER TABLE live_orders ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         await conn.execute("ALTER TABLE live_exits ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         # Safe migration: add new columns if they don't exist on old tables
@@ -639,6 +645,31 @@ _allowed_origins = [
     o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
     if o.strip()
 ]
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Everything under /api needs a signed-in session (see auth.py). Static files stay public so the login screen can load.
+    Declared before the CORS middleware so that the CORS headers also wrap the 401 answers."""
+    path = request.url.path
+    if not auth.required() or request.method == "OPTIONS" or not path.startswith("/api"):
+        return await call_next(request)
+    if request.method in auth.UNSAFE and not auth.csrf_ok(request, _allowed_origins):
+        return JSONResponse(status_code=403, content={"detail": "Blocked: request did not come from this site."})
+    if auth.is_public(path):
+        return await call_next(request)
+    try:
+        user = await auth.user_for_request(request.app.state.pool, request)
+    except Exception as e:                                  # database down: say so instead of pretending to be signed out
+        detail = getattr(e, "detail", None) or "Database unavailable"
+        return JSONResponse(status_code=getattr(e, "status_code", 503), content={"detail": detail})
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Sign in required."})
+    request.state.user = user
+    return await call_next(request)
+
+
+app.include_router(account.router)
+account.hooks["live_off"] = lambda: _live_state.update(enabled=False, enabled_at=None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1283,7 +1314,9 @@ async def live_status(request: Request):
 
 
 @app.post("/api/live/enable")
-async def live_enable(req: LiveEnable):
+async def live_enable(req: LiveEnable, request: Request):
+    if auth.required() and not await account.live_allowed(_get_pool(request)):
+        raise HTTPException(status_code=403, detail="Live trading is not allowed. Turn on 'Allow live trading' in Profile > Live first.")
     if req.phrase.strip() != _LIVE_PHRASE:
         raise HTTPException(status_code=400, detail=f"Type exactly {_LIVE_PHRASE} to switch live trading on.")
     b = _broker()
@@ -1698,40 +1731,13 @@ async def get_backtest_history(request: Request, limit: int = 20):
 # ─────────────────────────────────────────────
 
 @app.post("/api/ai/chat")
-async def ai_chat(req: AiChatRequest):
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="AI not configured on server (set ANTHROPIC_API_KEY in backend/.env)."
-        )
-
-    body = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": 1200,
-        "system": req.system,
-        "messages": [m.model_dump() for m in req.messages],
-    }
-    headers = {
-        "content-type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Anthropic API request timed out")
-        except httpx.ConnectError as e:
-            raise HTTPException(status_code=502, detail=f"Cannot reach Anthropic API: {e}")
-
-    if r.status_code != 200:
-        raise HTTPException(status_code=r.status_code, detail=f"Anthropic API error: {r.text[:300]}")
-
-    data = r.json()
-    text = "\n".join(
-        b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
-    )
+async def ai_chat(req: AiChatRequest, request: Request):
+    """Answers with the provider chosen in Profile > AI API keys (Anthropic, OpenAI or Gemini). The key never leaves the server."""
+    provider, key, model = await account.resolve_ai(_get_pool(request))
+    try:
+        text = await ai_providers.chat(provider, key, model, req.system, [m.model_dump() for m in req.messages])
+    except ai_providers.AIError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
     return {"text": text}
 
 
@@ -1754,6 +1760,13 @@ def _parse_ws_symbols(msg) -> Optional[list]:
 @app.websocket("/ws/prices")
 async def ws_prices(websocket: WebSocket):
     await websocket.accept()
+    try:
+        signed_in = await auth.ws_user(websocket.app.state.pool, websocket, _allowed_origins)
+    except Exception:
+        signed_in = None
+    if not signed_in:
+        await websocket.close(code=1008)                   # same close code the page already treats as "refused"
+        return
     reader = None
     try:
         symbols = _parse_ws_symbols(await websocket.receive_json())

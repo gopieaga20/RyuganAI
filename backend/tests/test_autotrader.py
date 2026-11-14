@@ -569,3 +569,27 @@ def test_news_keywords_match_whole_words_only():
     assert label("Markets weigh risk of rate cut", "Analysts voice concern") == "NEUTRAL"      # dropped words
     assert label("Reliance shares rallied 3%", "TCS gains after deal") == "BULLISH"            # inflected forms still count
     assert label("Govt bans exports", "Stock dropped 4%", "Shares falling") == "BEARISH"
+
+
+def test_strategies_switched_off_are_left_out_of_the_scan_and_news_is_not_fetched(monkeypatch):
+    seen = {}
+
+    def fake_eval(candles, intraday=True, news_label=None, disable=None, **kw):
+        seen.setdefault("disable", []).append(disable)
+        return {"ok": True, "call": "WAIT", "confidence": 30, "score": 0, "maxScore": 8, "adx": 25, "votes": [], "price": 100.0}
+    monkeypatch.setattr(at.sv, "evaluate", fake_eval)
+    fetched = []
+
+    async def candles(sym, interval, rng):
+        return [{"ts": i, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1} for i in range(70)]
+
+    async def heads(key):
+        fetched.append(key)
+        return []
+    deps = at.Deps(fetch_candles=candles, fetch_headlines=heads, get_contracts=lambda u: [], get_lot_size=lambda u: 1,
+                   fetch_ltp=None, disabled_strategies=["news", "smc"])
+    run(at.scan_symbol("TCS", deps))
+    assert seen["disable"] == [["news", "smc"]] * 2 and fetched == []                 # both timeframes, and no headline request
+    deps.disabled_strategies = None
+    run(at.scan_symbol("TCS", deps))
+    assert fetched == ["TCS"]

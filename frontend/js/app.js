@@ -1,5 +1,8 @@
 'use strict';
 
+import { requireLogin } from './auth.js';          // first: installs the fetch wrapper that carries the session before any other module fetches
+import { initProfile } from './profile.js';
+import { isLiveAllowed, prefsLoaded } from './strategy-prefs.js';
 import { DOM } from './dom-utils.js';
 import { State } from './state.js';
 import { WL } from './watchlist.js';
@@ -66,6 +69,7 @@ const ALL_TABS = PAGES;
  *  `fromRoute` is set when the address itself changed (load, Back, Forward), so it is not written back. */
 export function switchTab(t, { fromRoute = false } = {}) {
   if (!ALL_TABS.includes(t)) return;
+  if (t === 'live' && prefsLoaded() && !isLiveAllowed()) { t = 'dash'; if (fromRoute) try { history.replaceState(null, '', hashFor('dash')); } catch { } }           // Profile > Live trading is off: the page is not reachable, not even by address
   if (t !== 'dash' && document.getElementById('dash-chart')?.classList.contains('full')) document.getElementById('ch-full')?.click();   // leave chart full view
   try {
     if (!fromRoute && location.hash !== hashFor(t)) history.pushState(null, '', hashFor(t));
@@ -104,6 +108,8 @@ export function switchBTTab(t) {
    INIT
 ═══════════════════════════════════════════ */
 window.addEventListener('load', async () => {
+  const user = await requireLogin();               // the login screen, until a session exists
+  await initProfile(user);                         // profile menu + settings (also loads the strategy toggles and the live permission)
   // Initialize watchlist
   WL.init();
   initDash();

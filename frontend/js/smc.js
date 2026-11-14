@@ -1,182 +1,196 @@
 'use strict';
-/* Smart Money Concepts (SMC), pure functions, no DOM. Everything is read on the LAST candle using data up to and including it:
- * pivots are only used k bars after they form, zones only from the bar that confirmed them, so nothing looks into the future.
+/* Smart Money Concepts, a port of "Smart Money Concepts [LuxAlgo]" (TradingView).
+ * Original © LuxAlgo, licensed CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/): attribution required, non-commercial
+ * use only, and a work built on it must be shared under the same licence. This file is such a derivative work.
  *
- * Building blocks
- *   structure   BOS / CHoCH and the current trend (buildStructure in smc-structure.js)
- *   order block the last opposite-coloured candle before the move that broke structure; price returning into it (unmitigated) is a point of interest
- *   FVG         a three-candle imbalance retested from the right side (fvgRetest in smc-structure.js)
- *   sweep       a wick that takes the last swing high/low (liquidity) and closes back inside: stops were run, price is rejected
- *   zone        premium / discount of the last swing range: longs belong in discount (below 50%), shorts in premium (above 50%)
+ * What is ported (same rules and defaults as the indicator; pure functions, no DOM, nothing looks at a bar that has not closed):
+ *   legs / pivots   a pivot is the bar `size` bars back that was higher (lower) than every bar after it; it is registered when the leg flips.
+ *                   Sizes: swing 50, internal 5, equal highs/lows 3.
+ *   structure       BOS / CHoCH when a bar CLOSES through the latest pivot (internal and swing, each with its own trend).
+ *   order blocks    at each break: the bar with the lowest low (bullish) / highest high (bearish) between the broken pivot and the break, after the
+ *                   volatility filter (bars at least 2 x ATR(200) tall use their low as the high and the reverse). Mitigated when price trades through
+ *                   the far side (low under a bullish block, high over a bearish one). Newest first, 100 kept.
+ *   equal H/L       a new pivot within 0.1 x ATR(200) of the previous one of its kind.
+ *   fair value gaps three-bar gaps with the indicator's automatic threshold, removed when filled (its own removal rules).
+ *   trailing range  the swing range extremes, updated every bar; its midpoint is the equilibrium (premium above, discount below).
  *
- * The SMC call needs: a clear structure bias, a point of interest in that direction (order block, FVG or sweep), and the right half
- * of the range. It then votes +1 (bullish: BUY CE at the money) or -1 (bearish: BUY PE at the money), otherwise 0. */
-import { fvgRetest } from './smc-structure.js';
+ * The indicator draws; it gives no signal. The SMC VOTE below is this app's own rule on top of its outputs:
+ *   bullish (BUY CE): internal trend up, swing trend not down, an unmitigated bullish order block tapped by a rising candle, price in discount.
+ *   bearish (BUY PE): the mirror. Otherwise 0.
+ * Assumption: where the Pine code compares with `na` (before the first swing pivot exists) the comparison is treated as "different". */
+
+const BULL = 1, BEAR = -1;
+export const SWING_SIZE = 50, INTERNAL_SIZE = 5, EQUAL_SIZE = 3, EQUAL_THRESHOLD = 0.1, ATR_LENGTH = 200, MAX_BLOCKS = 100;
 
 const f2 = x => (Number.isFinite(x) ? x.toFixed(2) : '--');
 
-/** Confirmed swing pivots up to bar i: [{idx, price, type:'H'|'L'}] in order of confirmation. */
-export function pivots(candles, i, k = 3) {
-  const out = [];
-  for (let j = k; j <= i - k; j++) {
-    let isH = true, isL = true;
-    for (let q = j - k; q <= j + k; q++) {
-      if (q === j) continue;
-      if (candles[q].h >= candles[j].h) isH = false;
-      if (candles[q].l <= candles[j].l) isL = false;
-    }
-    if (isH) out.push({ idx: j, price: candles[j].h, type: 'H' });
-    if (isL) out.push({ idx: j, price: candles[j].l, type: 'L' });
+/** ta.atr(len): Wilder's RMA of the true range, first value after `len` bars (NaN before). */
+function atrSeries(candles, len) {
+  const n = candles.length, out = new Array(n).fill(NaN);
+  let sum = 0, rma = NaN;
+  for (let i = 0; i < n; i++) {
+    const c = candles[i];
+    const tr = i === 0 ? c.h - c.l : Math.max(c.h - c.l, Math.abs(c.h - candles[i - 1].c), Math.abs(c.l - candles[i - 1].c));
+    if (i < len) { sum += tr; if (i === len - 1) { rma = sum / len; out[i] = rma; } }
+    else { rma = (rma * (len - 1) + tr) / len; out[i] = rma; }
   }
   return out;
 }
 
-/** The order block of the structure break at bar b (dir 'LONG' | 'SHORT'): the last opposite candle at the origin of the move. */
-export function orderBlockOf(candles, b, dir, lookback = 10) {
-  const from = Math.max(0, b - lookback);
-  let origin = from;
-  for (let q = from; q < b; q++) {
-    if (dir === 'LONG' ? candles[q].l <= candles[origin].l : candles[q].h >= candles[origin].h) origin = q;
-  }
-  for (let q = origin; q >= Math.max(0, origin - 3); q--) {
-    const c = candles[q];
-    if (dir === 'LONG' ? c.c < c.o : c.c > c.o) return { dir, top: c.h, bottom: c.l, idx: q, formedAt: b };
-  }
-  return null;
-}
+const newPivot = () => ({ level: NaN, last: NaN, crossed: false, idx: -1, prevLevel: NaN });
+const newLeg = () => ({ leg: 0, prev: 0 });
 
-/** The most recent unmitigated order block aligned with `dir` that the last candle is tapping and rejecting. */
-export function orderBlockRetest(candles, S, i, dir, maxAge = 40) {
-  for (let b = i - 1; b >= Math.max(1, i - maxAge); b--) {
-    const ev = S.events[b];
-    if (!ev || ev.dir !== dir) continue;
-    const ob = orderBlockOf(candles, b, dir);
-    if (!ob) continue;
-    let dead = false;
-    for (let m = b + 1; m < i; m++) {                       // mitigated once any close went through the far side
-      if (dir === 'LONG' ? candles[m].c < ob.bottom : candles[m].c > ob.top) { dead = true; break; }
+/** Run the whole indicator over `candles` ([{ts,o,h,l,c,v}] oldest first).
+ *  Returns { events, obs, fvgs, eqs, trailTop, trailBottom, swingBias, internalBias, votes, last, atr }:
+ *    events  [{i, type:'BOS'|'CHoCH', dir:'LONG'|'SHORT', level, pivotIdx, internal}]       (the break is on bar i's close)
+ *    obs     [{bias, top, bottom, idx, formedAt, internal, mitigatedAt|null}]               (every block ever made; mitigatedAt null = still live)
+ *    fvgs    [{dir, top, bottom, i, filledAt|null}]
+ *    eqs     [{type:'EQH'|'EQL', i, level, a, b}]                                           (a, b: bar indexes of the two pivots)
+ *    trailTop / trailBottom   the swing range per bar (NaN until the first swing pivot)
+ *    votes   Int8Array of the SMC vote per bar;  last = full reading at the final bar */
+export function buildSmc(candles) {
+  const n = candles.length;
+  const atr = atrSeries(candles, ATR_LENGTH);
+  const parsedH = new Array(n), parsedL = new Array(n);
+  const events = [], obs = [], fvgs = [], eqs = [];
+  const trailTop = new Array(n).fill(NaN), trailBottom = new Array(n).fill(NaN);
+  const swingBias = new Int8Array(n), internalBias = new Int8Array(n), votes = new Int8Array(n);
+
+  const swingHigh = newPivot(), swingLow = newPivot(), internalHigh = newPivot(), internalLow = newPivot(), equalHigh = newPivot(), equalLow = newPivot();
+  const legSwing = newLeg(), legInternal = newLeg(), legEqual = newLeg();
+  const trailing = { top: NaN, bottom: NaN };
+  const trend = { swing: 0, internal: 0 };
+  const live = { internal: [], swing: [] };                  // unmitigated blocks, newest first
+  const liveFvg = [];
+  let cumDelta = 0, last = null;
+
+  /** One call of the indicator's getCurrentStructure(size, equalHighLow, internal). */
+  function structure(i, size, st, equalHL, internal) {
+    if (i >= size) {
+      let hi = -Infinity, lo = Infinity;
+      for (let q = i - size + 1; q <= i; q++) { if (candles[q].h > hi) hi = candles[q].h; if (candles[q].l < lo) lo = candles[q].l; }
+      if (candles[i - size].h > hi) st.leg = 0;
+      else if (candles[i - size].l < lo) st.leg = 1;
     }
-    if (dead) continue;
+    const change = i >= 1 ? st.leg - st.prev : 0;
+    st.prev = st.leg;
+    if (change === 0) return;
+    const p = candles[i - size];
+    if (change === 1) {                                          // a new bullish leg starts: the pivot is a LOW
+      const pv = equalHL ? equalLow : internal ? internalLow : swingLow;
+      if (equalHL && Math.abs(pv.level - p.l) < EQUAL_THRESHOLD * atr[i]) eqs.push({ type: 'EQL', i, level: p.l, a: pv.idx, b: i - size });
+      pv.last = pv.level; pv.level = p.l; pv.crossed = false; pv.idx = i - size;
+      if (!equalHL && !internal) trailing.bottom = pv.level;
+    } else {                                                     // a new bearish leg starts: the pivot is a HIGH
+      const pv = equalHL ? equalHigh : internal ? internalHigh : swingHigh;
+      if (equalHL && Math.abs(pv.level - p.h) < EQUAL_THRESHOLD * atr[i]) eqs.push({ type: 'EQH', i, level: p.h, a: pv.idx, b: i - size });
+      pv.last = pv.level; pv.level = p.h; pv.crossed = false; pv.idx = i - size;
+      if (!equalHL && !internal) trailing.top = pv.level;
+    }
+  }
+
+  function storeBlock(i, pv, internal, bias) {
+    const arr = bias === BEAR ? parsedH : parsedL;
+    let best = pv.idx;
+    for (let q = pv.idx; q < i; q++) if (bias === BEAR ? arr[q] > arr[best] : arr[q] < arr[best]) best = q;
+    const ob = { bias, top: parsedH[best], bottom: parsedL[best], idx: best, formedAt: i, internal, mitigatedAt: null };
+    obs.push(ob);
+    const list = internal ? live.internal : live.swing;
+    if (list.length >= MAX_BLOCKS) list.pop();
+    list.unshift(ob);
+  }
+
+  /** The indicator's displayStructure(internal): a close through the latest pivot is a BOS (with the trend) or a CHoCH (against it). */
+  function display(i, internal) {
+    const c = candles[i], prevClose = i >= 1 ? candles[i - 1].c : NaN;
+    const hi = internal ? internalHigh : swingHigh, lo = internal ? internalLow : swingLow;
+    const key = internal ? 'internal' : 'swing';
+    const up = Number.isFinite(hi.level) && Number.isFinite(hi.prevLevel) && c.c > hi.level && prevClose <= hi.prevLevel;
+    if (up && !hi.crossed && (internal ? internalHigh.level !== swingHigh.level : true)) {
+      const type = trend[key] === BEAR ? 'CHoCH' : 'BOS';
+      hi.crossed = true; trend[key] = BULL;
+      events.push({ i, type, dir: 'LONG', level: hi.level, pivotIdx: hi.idx, internal });
+      storeBlock(i, hi, internal, BULL);
+    }
+    const down = Number.isFinite(lo.level) && Number.isFinite(lo.prevLevel) && c.c < lo.level && prevClose >= lo.prevLevel;
+    if (down && !lo.crossed && (internal ? internalLow.level !== swingLow.level : true)) {
+      const type = trend[key] === BULL ? 'CHoCH' : 'BOS';
+      lo.crossed = true; trend[key] = BEAR;
+      events.push({ i, type, dir: 'SHORT', level: lo.level, pivotIdx: lo.idx, internal });
+      storeBlock(i, lo, internal, BEAR);
+    }
+  }
+
+  function mitigate(i, list) {
     const c = candles[i];
-    if (dir === 'LONG' && c.l <= ob.top && c.c >= ob.bottom && c.c > c.o) return ob;
-    if (dir === 'SHORT' && c.h >= ob.bottom && c.c <= ob.top && c.c < c.o) return ob;
-    return null;                                             // only the freshest block counts
-  }
-  return null;
-}
-
-/** +1: the last candle swept the last swing LOW and closed back above it (sell-side liquidity taken); -1: mirror at the last swing HIGH. */
-export function liquiditySweep(candles, pv, i) {
-  const c = candles[i], range = c.h - c.l;
-  if (!(range > 0)) return 0;
-  let lastL = null, lastH = null;
-  for (let q = pv.length - 1; q >= 0 && !(lastL && lastH); q--) {
-    if (pv[q].type === 'L' && !lastL) lastL = pv[q];
-    if (pv[q].type === 'H' && !lastH) lastH = pv[q];
-  }
-  if (lastL && c.l < lastL.price && c.c > lastL.price && (Math.min(c.o, c.c) - c.l) / range >= 0.4) return 1;
-  if (lastH && c.h > lastH.price && c.c < lastH.price && (c.h - Math.max(c.o, c.c)) / range >= 0.4) return -1;
-  return 0;
-}
-
-/** +1 when price is in the DISCOUNT half of the last swing range, -1 in the PREMIUM half, 0 when there is no range or price is outside it. */
-export function premiumDiscount(candles, pv, i) {
-  let lastL = null, lastH = null;
-  for (let q = pv.length - 1; q >= 0 && !(lastL && lastH); q--) {
-    if (pv[q].type === 'L' && !lastL) lastL = pv[q];
-    if (pv[q].type === 'H' && !lastH) lastH = pv[q];
-  }
-  if (!lastL || !lastH || !(lastH.price > lastL.price)) return { zone: 0, eq: null };
-  const p = candles[i].c, eq = (lastH.price + lastL.price) / 2;
-  if (p < lastL.price || p > lastH.price) return { zone: 0, eq };
-  return { zone: p < eq ? 1 : p > eq ? -1 : 0, eq, high: lastH.price, low: lastL.price };
-}
-
-/** The SMC reading at bar i. `S` is buildStructure(candles, k). Returns {vote, parts, reason, zones}. */
-export function smcSignal(candles, S, i = candles.length - 1, k = 3) {
-  const bias = S.trend[i];
-  const pv = pivots(candles, i, k);
-  const dirT = bias === 1 ? 'LONG' : bias === -1 ? 'SHORT' : null;
-  const ob = dirT ? orderBlockRetest(candles, S, i, dirT) : null;
-  const gap = dirT ? fvgRetest(S, candles, i, dirT, 12) : null;
-  const sweep = liquiditySweep(candles, pv, i);
-  const pd = premiumDiscount(candles, pv, i);
-  const parts = { bias, ob: ob ? bias : 0, fvg: gap ? bias : 0, sweep, pd: pd.zone };
-
-  const poi = parts.ob !== 0 || parts.fvg !== 0 || (parts.sweep !== 0 && parts.sweep === bias);
-  let vote = 0, reason;
-  if (!bias) reason = 'Structure undecided: no SMC setup';
-  else if (!poi) reason = `${bias > 0 ? 'Bullish' : 'Bearish'} structure but price is not at an order block, gap or liquidity sweep`;
-  else if (pd.zone !== bias) reason = `${bias > 0 ? 'Bullish' : 'Bearish'} setup, but price is in the ${pd.zone === 0 ? 'middle' : pd.zone > 0 ? 'discount' : 'premium'} half: wait for ${bias > 0 ? 'discount' : 'premium'}`;
-  else {
-    vote = bias;
-    const what = [ob && `order block ${f2(ob.bottom)}-${f2(ob.top)}`, gap && `gap ${f2(gap.bottom)}-${f2(gap.top)}`, parts.sweep === bias && 'liquidity sweep'].filter(Boolean).join(' + ');
-    reason = `${bias > 0 ? 'Bullish' : 'Bearish'} structure, ${what} tapped in the ${bias > 0 ? 'discount' : 'premium'} half`;
-  }
-  return { vote, parts, reason, zones: { ob, gap, eq: pd.eq ?? null } };
-}
-
-/* ───────────── variants: displacement, and the sweep -> change-of-character reversal ───────────── */
-
-/** A displacement candle: a big, one-directional body (>= 1.5x the recent average range) that closes in the outer quarter of its range. */
-export function isDisplacement(candles, b, dir, lookback = 14) {
-  const c = candles[b], range = c.h - c.l;
-  if (!(range > 0) || b < 2) return false;
-  let sum = 0, k = 0;
-  for (let q = Math.max(0, b - lookback); q < b; q++) { sum += candles[q].h - candles[q].l; k++; }
-  const avg = k ? sum / k : 0;
-  if (!(avg > 0) || Math.abs(c.c - c.o) < 1.5 * avg) return false;
-  return dir === 'LONG' ? c.c > c.o && (c.h - c.c) / range <= 0.25 : c.c < c.o && (c.c - c.l) / range <= 0.25;
-}
-
-/** The sweep at bar s judged with the pivots that were already confirmed then (idx <= s - k). */
-function sweepAt(candles, pv, s, k) {
-  const known = [];
-  for (const p of pv) if (p.idx <= s - k) known.push(p);
-  return known.length ? liquiditySweep(candles, known, s) : 0;
-}
-
-/** Sweep followed by a change of character, read at bar i.
- *  Bullish: a sell-side sweep (wick under a swing low, close back above) in the 12 bars before a CHoCH up that is at most `maxAge` bars old.
- *  `stage`: 'choch' on the CHoCH bar itself, 'retest' on a later bar that pulls back into the order block or gap left by the move and closes up.
- *  Returns {vote, stage, ageBars, displaced, reason} (vote 0 when there is no setup). */
-export function sweepChoch(candles, S, i, k = 3, maxAge = 8) {
-  const none = { vote: 0, stage: null, ageBars: null, displaced: false, reason: 'No sweep followed by a change of character' };
-  let e = -1;
-  for (let q = i; q >= Math.max(1, i - maxAge); q--) if (S.events[q] && S.events[q].type === 'CHoCH') { e = q; break; }
-  if (e < 0) return none;
-  const dir = S.events[e].dir, sign = dir === 'LONG' ? 1 : -1;
-  const pv = pivots(candles, e, k);
-  let swept = -1;
-  for (let s = e; s >= Math.max(1, e - 12); s--) if (sweepAt(candles, pv, s, k) === sign) { swept = s; break; }
-  if (swept < 0) return none;
-  const displaced = isDisplacement(candles, e, dir);
-  const word = sign > 0 ? 'bullish' : 'bearish';
-  if (i === e) return { vote: sign, stage: 'choch', ageBars: 0, displaced, reason: `Liquidity swept ${e - swept} bars ago, then a ${word} change of character${displaced ? ' with a displacement candle' : ''}` };
-  const ob = orderBlockOf(candles, e, dir);
-  let touch = null;
-  const c = candles[i];
-  const tapsOb = ob && (dir === 'LONG' ? c.l <= ob.top && c.c >= ob.bottom && c.c > c.o : c.h >= ob.bottom && c.c <= ob.top && c.c < c.o);
-  if (tapsOb) touch = 'order block';
-  else {
-    const gap = fvgRetest(S, candles, i, dir, 12);
-    if (gap && gap.i >= swept) touch = 'gap';
-  }
-  if (!touch) return none;
-  for (let m = e + 1; m < i; m++) if (dir === 'LONG' ? candles[m].c < candles[swept].l : candles[m].c > candles[swept].h) return none;     // the sweep extreme was lost: setup failed
-  return { vote: sign, stage: 'retest', ageBars: i - e, displaced, reason: `Pullback into the ${touch} after liquidity was swept and character changed ${word}${displaced ? ' (displacement)' : ''}` };
-}
-
-/** The SMC vote with the displacement requirement: the latest same-direction structure break (<= 40 bars old) must have been a displacement candle. */
-export function smcWithDisplacement(candles, S, i, k = 3) {
-  const base = smcSignal(candles, S, i, k);
-  if (!base.vote) return { ...base, displaced: false };
-  const dir = base.vote > 0 ? 'LONG' : 'SHORT';
-  for (let q = i; q >= Math.max(0, i - 40); q--) {
-    if (S.events[q] && S.events[q].dir === dir) {
-      const d = isDisplacement(candles, q, dir);
-      return d ? { ...base, displaced: true } : { ...base, vote: 0, displaced: false, reason: base.reason + ' - but the break was not a displacement candle' };
+    for (let k = list.length - 1; k >= 0; k--) {
+      const ob = list[k];
+      if ((ob.bias === BEAR && c.h > ob.top) || (ob.bias === BULL && c.l < ob.bottom)) { ob.mitigatedAt = i; list.splice(k, 1); }
     }
   }
-  return { ...base, vote: 0, displaced: false };
+
+  /** This app's SMC vote at bar i from the state after bar i was processed. `full` also builds the reading text. */
+  function read(i, full) {
+    const c = candles[i], bias = trend.internal;
+    const zero = reason => ({ vote: 0, reason, bias, swing: trend.swing, ob: null, eq: null, zone: 0 });
+    if (!bias) return zero('Structure undecided: no SMC setup');
+    const word = bias > 0 ? 'Bullish' : 'Bearish';
+    if (trend.swing === -bias) return zero(`${word} internal structure but the swing structure points the other way`);
+    let hit = null;
+    for (const ob of [...live.internal, ...live.swing].sort((a, b) => b.formedAt - a.formedAt)) {
+      if (ob.bias !== bias || ob.formedAt >= i) continue;
+      const tapped = bias > 0 ? c.l <= ob.top && c.c > c.o : c.h >= ob.bottom && c.c < c.o;
+      if (tapped) { hit = ob; break; }
+    }
+    const eq = (trailing.top + trailing.bottom) / 2;
+    const zone = !Number.isFinite(eq) ? 0 : c.c < eq ? 1 : c.c > eq ? -1 : 0;
+    const base = { bias, swing: trend.swing, ob: hit, eq: Number.isFinite(eq) ? eq : null, zone };
+    if (!hit) return { ...base, vote: 0, reason: full ? `${word} structure but price is not tapping an order block` : '' };
+    if (zone !== bias) return { ...base, vote: 0, reason: full ? `${word} setup at an order block, but price is in the ${zone === 0 ? 'middle' : zone > 0 ? 'discount' : 'premium'} half: wait for ${bias > 0 ? 'discount' : 'premium'}` : '' };
+    return { ...base, vote: bias, reason: full ? `${word} structure, ${hit.internal ? 'internal' : 'swing'} order block ${f2(hit.bottom)}-${f2(hit.top)} tapped in the ${bias > 0 ? 'discount' : 'premium'} half` : '' };
+  }
+
+  for (let i = 0; i < n; i++) {
+    const c = candles[i];
+    const hv = (c.h - c.l) >= 2 * atr[i];                        // volatile bar: a block must not start from a spike
+    parsedH[i] = hv ? c.l : c.h; parsedL[i] = hv ? c.h : c.l;
+    trailing.top = Math.max(c.h, trailing.top); trailing.bottom = Math.min(c.l, trailing.bottom);
+
+    for (let k = liveFvg.length - 1; k >= 0; k--) {              // fair value gaps are checked before this bar's own structure work
+      const g = liveFvg[k];
+      if ((g.dir === 'LONG' && c.l < g.bottom) || (g.dir === 'SHORT' && c.h > g.top)) { g.filledAt = i; liveFvg.splice(k, 1); }
+    }
+
+    structure(i, SWING_SIZE, legSwing, false, false);
+    structure(i, INTERNAL_SIZE, legInternal, false, true);
+    structure(i, EQUAL_SIZE, legEqual, true, false);
+    display(i, true);
+    display(i, false);
+    mitigate(i, live.internal); mitigate(i, live.swing);
+    for (const p of [internalHigh, internalLow, swingHigh, swingLow]) p.prevLevel = p.level;
+
+    if (i >= 1) {                                                // fair value gaps (the indicator's "auto threshold")
+      const lastClose = candles[i - 1].c, lastOpen = candles[i - 1].o;
+      const delta = (lastClose - lastOpen) / (lastOpen * 100);
+      cumDelta += Math.abs(delta);
+      if (i >= 2) {
+        const thr = cumDelta / i * 2, h2 = candles[i - 2].h, l2 = candles[i - 2].l;
+        if (c.l > h2 && lastClose > h2 && delta > thr) { const g = { dir: 'LONG', top: c.l, bottom: h2, i, filledAt: null }; fvgs.push(g); liveFvg.push(g); }
+        if (c.h < l2 && lastClose < l2 && -delta > thr) { const g = { dir: 'SHORT', top: c.h, bottom: l2, i, filledAt: null }; fvgs.push(g); liveFvg.push(g); }
+      }
+    }
+
+    trailTop[i] = trailing.top; trailBottom[i] = trailing.bottom;
+    swingBias[i] = trend.swing; internalBias[i] = trend.internal;
+    const last_ = i === n - 1;
+    const r = read(i, last_);
+    votes[i] = r.vote;
+    if (last_) last = r;
+  }
+  return { events, obs, fvgs, eqs, trailTop, trailBottom, swingBias, internalBias, votes, last: last || { vote: 0, reason: 'No data', bias: 0, swing: 0, ob: null, eq: null, zone: 0 }, atr };
+}
+
+/** The SMC reading at the last candle: {vote, reason, bias, swing, ob, eq, zone}. */
+export function smcSignal(candles) {
+  return candles.length < 2 ? { vote: 0, reason: 'No data', bias: 0, swing: 0, ob: null, eq: null, zone: 0 } : buildSmc(candles).last;
 }

@@ -9,7 +9,22 @@
  *
  * Votes: +1 bullish (BUY CE at the money), -1 bearish (BUY PE at the money), 0 nothing. Conflicting readings on the same bar cancel out. */
 import { istParts } from './candles.js';
-import { pivots } from './smc.js';
+
+/** Confirmed classic swing pivots up to bar i (a bar higher / lower than the k bars on each side): [{idx, price, type:'H'|'L'}]. Used for swing support/resistance. */
+export function pivots(candles, i, k = 3) {
+  const out = [];
+  for (let j = k; j <= i - k; j++) {
+    let isH = true, isL = true;
+    for (let q = j - k; q <= j + k; q++) {
+      if (q === j) continue;
+      if (candles[q].h >= candles[j].h) isH = false;
+      if (candles[q].l <= candles[j].l) isL = false;
+    }
+    if (isH) out.push({ idx: j, price: candles[j].h, type: 'H' });
+    if (isL) out.push({ idx: j, price: candles[j].l, type: 'L' });
+  }
+  return out;
+}
 
 const f2 = x => (Number.isFinite(x) ? x.toFixed(2) : '--');
 

@@ -5,8 +5,9 @@ import { subscribeLivePrices } from './ws-prices.js';
 import { Indicators } from './indicators.js';
 import { buildStructure } from './smc-structure.js';
 import { evaluate } from './strategies.js';
+import { getDisabled } from './strategy-prefs.js';
 import { sessionLevels } from './sr.js';
-import { orderBlockOf, pivots, liquiditySweep, isDisplacement, sweepChoch } from './smc.js';
+import { buildSmc } from './smc.js';
 import { toCandles, vwapIst } from './candles.js';
 import { CHART_TF } from './timeframes.js';
 
@@ -18,12 +19,11 @@ export const CHART_OVERLAYS = [
   { id: 'bb',      label: 'Bollinger',   on: false },
   { id: 'vol',     label: 'Volume',      on: true },
   { id: 'rsi',     label: 'RSI',         on: true },
-  { id: 'struct',  label: 'BOS / CHoCH', on: true },
+  { id: 'struct',  label: 'SMC structure', on: true },
   { id: 'fvg',     label: 'FVG zones',   on: true },
   { id: 'ob',      label: 'Order blocks', on: true },
-  { id: 'sweep',   label: 'Liquidity sweeps', on: true },
-  { id: 'disp',    label: 'Displacement', on: false },
-  { id: 'seq',     label: 'Sweep to CHoCH', on: false },
+  { id: 'eq',      label: 'Equal highs/lows', on: false },
+  { id: 'pd',      label: 'Premium / discount', on: false },
   { id: 'sr',      label: 'Prev day H/L', on: true },
   { id: 'signals', label: 'Signals',     on: true },
 ];
@@ -192,42 +192,25 @@ export const ChartView = (() => {
 
   function drawMarkers() {
     const cs = cur(), o = state.overlays, marks = [];
-    if (o.struct && cs.length > 20) {
-      const S = buildStructure(cs, 3);
-      cs.forEach((c, i) => {
-        const ev = S.events[i]; if (!ev) return;
-        const long = ev.dir === 'LONG';
-        marks.push({ time: t(c), position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown', color: ev.type === 'CHoCH' ? '#ffb020' : (long ? '#26a69a' : '#ef5350'), text: ev.type });
-      });
-    }
-    if ((o.sweep || o.disp || o.seq) && cs.length > 20) {
-      const S2 = buildStructure(cs, 3), n = cs.length;
-      if (o.sweep) {                                    // a wick that takes the last swing low / high and closes back inside (only pivots already confirmed at that bar are used)
-        const pv = pivots(cs, n - 1, 3), known = []; let pi = 0;
-        for (let i = 0; i < n; i++) {
-          while (pi < pv.length && pv[pi].idx <= i - 3) known.push(pv[pi++]);
-          const sw = liquiditySweep(cs, known, i);
-          if (sw) marks.push({ time: t(cs[i]), position: sw > 0 ? 'belowBar' : 'aboveBar', shape: 'circle', color: sw > 0 ? '#7dd3fc' : '#fdba74', text: 'SWEEP' });
+    if ((o.struct || o.eq) && cs.length > 60) {
+      const R = smcOf(cs);
+      if (o.struct) {                                    // BOS / CHoCH from the LuxAlgo port: swing breaks big and labelled, internal breaks small
+        for (const ev of R.events) {
+          const long = ev.dir === 'LONG', choch = ev.type === 'CHoCH';
+          marks.push({ time: t(cs[ev.i]), position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : 'arrowDown',
+            color: choch ? (ev.internal ? '#c99a3a' : '#ffb020') : (long ? (ev.internal ? '#1f8f86' : '#26a69a') : (ev.internal ? '#b24543' : '#ef5350')),
+            text: ev.internal ? (choch ? 'ch' : 'bos') : ev.type, size: ev.internal ? 1 : 2 });
         }
       }
-      if (o.disp) {                                     // structure breaks made by a big one-directional candle
-        for (let i = 0; i < n; i++) {
-          const ev = S2.events[i];
-          if (ev && isDisplacement(cs, i, ev.dir)) marks.push({ time: t(cs[i]), position: ev.dir === 'LONG' ? 'aboveBar' : 'belowBar', shape: 'square', color: '#c4b5fd', text: 'DISP' });
-        }
-      }
-      if (o.seq) {                                      // liquidity sweep followed by a change of character, on the CHoCH candle
-        for (let i = Math.max(60, n - 150); i < n; i++) {
-          const r = sweepChoch(cs, S2, i);
-          if (r.vote && r.stage === 'choch') marks.push({ time: t(cs[i]), position: r.vote > 0 ? 'belowBar' : 'aboveBar', shape: r.vote > 0 ? 'arrowUp' : 'arrowDown', color: '#f0abfc', text: 'SWEEP>CHoCH' });
-        }
+      if (o.eq) {
+        for (const q of R.eqs) marks.push({ time: t(cs[q.i]), position: q.type === 'EQH' ? 'aboveBar' : 'belowBar', shape: 'circle', color: '#a78bfa', text: q.type });
       }
     }
     if (o.signals && cs.length > 80) {
       // replay the vote over the most recent bars; mark where a CE/PE call first appears
       let prev = 'WAIT';
       for (let k = Math.max(60, cs.length - 90); k < cs.length; k++) {
-        const r = evaluate(cs.slice(0, k + 1), { intraday: state.tf.intraday });
+        const r = evaluate(cs.slice(0, k + 1), { intraday: state.tf.intraday, disable: getDisabled() });
         if (r.ok && r.call !== 'WAIT' && prev !== r.call) {
           const ce = r.call === 'BUY CE';
           marks.push({ time: t(cs[k]), position: ce ? 'belowBar' : 'aboveBar', shape: ce ? 'arrowUp' : 'arrowDown', color: ce ? '#3ddc97' : '#ff6b6b', text: r.call, size: 2 });
@@ -271,24 +254,30 @@ export const ChartView = (() => {
     }
   }
 
-  /** Unmitigated order blocks (the last opposite candle before a structure break) as two solid lines each: sky blue = bullish, orange = bearish. */
+  /** The indicator's cached result for the candles on screen (rebuilt only when the data changes). */
+  let smcMemo = { key: '', res: null };
+  function smcOf(cs) {
+    const key = `${state.sym}|${state.tf.key}|${cs.length}|${cs.length ? cs[cs.length - 1].ts : 0}`;
+    if (smcMemo.key !== key) smcMemo = { key, res: buildSmc(cs) };
+    return smcMemo.res;
+  }
+
+  /** Unmitigated order blocks from the LuxAlgo port, as two lines each from the block's bar to now: the 5 newest internal blocks (thin) and the 5 newest swing blocks (thick).
+   *  Sky blue = bullish, orange = bearish. */
   function drawOb() {
     for (const x of obLines) main.removeSeries(x);
     obLines = [];
     const cs = cur();
-    if (!state.overlays.ob || cs.length < 30) return;
-    const S = buildStructure(cs, 3), last = cs.length - 1, live = [];
-    for (let b = last - 1; b >= Math.max(1, last - 120) && live.length < 3; b--) {
-      const ev = S.events[b]; if (!ev) continue;
-      const ob = orderBlockOf(cs, b, ev.dir); if (!ob) continue;
-      let dead = false;
-      for (let m = b + 1; m <= last; m++) if (ev.dir === 'LONG' ? cs[m].c < ob.bottom : cs[m].c > ob.top) { dead = true; break; }
-      if (!dead) live.push(ob);
-    }
-    for (const ob of live) {
-      const col = ob.dir === 'LONG' ? '#38bdf8' : '#fb923c';
+    if (!state.overlays.ob || cs.length < 60) return;
+    const R = smcOf(cs), last = cs.length - 1;
+    // only blocks inside the price range of the bars on screen: an old block far away would stretch the price scale and squash the candles
+    const win = cs.slice(-(state.tf.intraday ? 150 : 180));
+    const lo = Math.min(...win.map(c => c.l)), hi = Math.max(...win.map(c => c.h));
+    const live = kind => R.obs.filter(b => b.internal === kind && b.mitigatedAt === null && b.top >= lo && b.bottom <= hi).slice(-5);
+    for (const ob of [...live(true), ...live(false)]) {
+      const col = ob.bias > 0 ? '#38bdf8' : '#fb923c';
       for (const price of [ob.top, ob.bottom]) {
-        const ln = main.addLineSeries({ color: col, lineWidth: 2, lineStyle: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        const ln = main.addLineSeries({ color: col, lineWidth: ob.internal ? 1 : 3, lineStyle: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
         ln.setData([{ time: t(cs[ob.idx]), value: price }, { time: t(cs[last]), value: price }]);
         obLines.push(ln);
       }
@@ -311,8 +300,16 @@ export const ChartView = (() => {
   function drawLevels() {
     for (const pl of priceLines) candleS.removePriceLine(pl);
     priceLines = [];
+    const add = (price, color, title, style = 2) => priceLines.push(candleS.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title }));
+    const cs = cur();
+    if (state.overlays.pd && cs.length >= 60) {          // swing range of the LuxAlgo port: the strong / weak high and low and the equilibrium between them
+      const R = smcOf(cs), k = cs.length - 1, top = R.trailTop[k], bot = R.trailBottom[k];
+      if (Number.isFinite(top) && Number.isFinite(bot)) {
+        add(top, '#ef5350', R.swingBias[k] < 0 ? 'Strong High' : 'Weak High', 0); add(bot, '#26a69a', R.swingBias[k] > 0 ? 'Strong Low' : 'Weak Low', 0);
+        add((top + bot) / 2, '#94a3b8', 'Equilibrium', 1);
+      }
+    }
     const L = state.levels; if (!L) return;
-    const add = (price, color, title) => priceLines.push(candleS.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title }));
     add(L.sl, '#ef5350', 'SL'); add(L.t1, '#26a69a', 'T1'); add(L.t2, '#26a69a', 'T2');
   }
 
@@ -402,7 +399,7 @@ export const ChartView = (() => {
   }
 
   return {
-    init, load, reset, fit, setOverlay, setLevels, setAutoMarks, applyTheme, resize,
+    init, load, reset, fit, refresh: () => { if (main) render(); }, setOverlay, setLevels, setAutoMarks, applyTheme, resize,
     startReplay, stopReplay, setReplayIdx, stepReplay, playReplay, setReplaySpeed,
     onReplay(cb) { replay.cb = cb; },
     visible: cur,

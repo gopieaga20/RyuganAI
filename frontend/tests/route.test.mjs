@@ -21,3 +21,8 @@ test('unknown, empty or odd addresses open the dashboard and never throw', () =>
 test('every page has a title', () => {
   for (const p of PAGES) assert.match(titleFor(p), /· R-Yugan Pro$/);
 });
+
+test('the profile page has an address and a title', () => {
+  assert.equal(parseRoute('#/profile'), 'profile');
+  assert.equal(titleFor('profile'), 'Profile · R-Yugan Pro');
+});
