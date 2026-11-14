@@ -26,6 +26,7 @@ DEFAULTS = {
     "min_score": 75,              # feed threshold (blueprint)
     "risk_pct": 1.0,              # % of capital risked per setup
     "max_pct_per_position": 20.0,
+    "max_stop_pct": 8.0,          # a setup whose stop is further than this below the entry is dropped
     "min_turnover_cr": 10.0,      # average 20-day traded value, Rs crore
     "min_mcap_cr": 5000.0,        # market cap, Rs crore (unknown = not excluded)
     "fundamentals_max_age_days": 7,
@@ -77,7 +78,7 @@ async def get_settings(pool) -> dict:
 def clean_settings(patch: dict, current: dict) -> dict:
     """Validate a settings patch against the defaults' types and sane ranges; unknown keys are dropped."""
     out = dict(current)
-    ranges = {"min_score": (0, 100), "risk_pct": (0.05, 5), "max_pct_per_position": (1, 50), "min_turnover_cr": (0, 10000), "min_mcap_cr": (0, 10 ** 7),
+    ranges = {"min_score": (0, 100), "risk_pct": (0.05, 5), "max_pct_per_position": (1, 50), "max_stop_pct": (1, 30), "min_turnover_cr": (0, 10000), "min_mcap_cr": (0, 10 ** 7),
               "fundamentals_max_age_days": (1, 60), "max_delivery_positions": (1, 20), "intraday_feed_size": (1, 40)}
     for k, v in patch.items():
         if k not in DEFAULTS or v is None:
@@ -145,7 +146,8 @@ def build_rows(universe: dict, bench: list, fundamentals: dict, bhav: dict, flag
         tgate = stech.technical_gate(cs, ind, i, rr)
         brk = stech.base_breakout(cs, ind, i)
         tscore = stech.technical_score(cs, ind, i, rr, brk)
-        setup = stech.breakout_setup(cs, ind, i, brk) or stech.pullback_setup(cs, ind, i)
+        cap = settings.get("max_stop_pct")
+        setup = stech.breakout_setup(cs, ind, i, brk, cap) or stech.pullback_setup(cs, ind, i, cap)
         if setup:
             setup = {**setup, "qty": stech.position_size(capital, settings["risk_pct"], setup["entry"], setup["stop"], settings["max_pct_per_position"]),
                      "invalidation": f"Daily close below {setup['stop']:.2f}"}
@@ -304,6 +306,8 @@ async def run_screen(pool, force_ingest: bool = True) -> dict:
         state.update(last_run=time.time())
         state["phase"] = "follow-up"
         meta["follow_up"] = await follow_up(pool, rows, settings)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE screener_runs SET meta = $1::jsonb WHERE id = (SELECT MAX(id) FROM screener_runs)", json.dumps(meta, default=str))
         return {"started": True, **meta}
     except Exception as e:
         state["error"] = str(e)
@@ -420,6 +424,7 @@ class SettingsPatch(BaseModel):
     min_score: Optional[float] = None
     risk_pct: Optional[float] = None
     max_pct_per_position: Optional[float] = None
+    max_stop_pct: Optional[float] = None
     min_turnover_cr: Optional[float] = None
     min_mcap_cr: Optional[float] = None
     fundamentals_max_age_days: Optional[int] = None

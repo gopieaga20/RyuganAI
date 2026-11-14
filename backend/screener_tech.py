@@ -156,7 +156,7 @@ def technical_score(candles: list, ind: dict, i: int, rs: Optional[float], break
 
 
 # ───────────── trade setups ─────────────
-def breakout_setup(candles: list, ind: dict, i: int, brk: Optional[dict] = None) -> Optional[dict]:
+def breakout_setup(candles: list, ind: dict, i: int, brk: Optional[dict] = None, max_stop_pct: Optional[float] = None) -> Optional[dict]:
     """Setup A. Entry = resistance + 0.15 ATR, stop = min(breakout low, swing low) - 0.5 ATR, T1 = 2R, T2 = 3R. None when there is no breakout, RSI is over 78,
     or the close is already more than 1 ATR above the entry (chasing)."""
     brk = brk or base_breakout(candles, ind, i)
@@ -171,10 +171,12 @@ def breakout_setup(candles: list, ind: dict, i: int, brk: Optional[dict] = None)
     if not (entry > stop):
         return None
     risk = entry - stop
+    if max_stop_pct is not None and risk / entry * 100 > max_stop_pct:
+        return None                                    # stop too far below the entry: no setup (`max_stop_pct` None = no cap, as in the backtest)
     return {"type": "BREAKOUT", "entry": entry, "stop": stop, "t1": entry + 2 * risk, "t2": entry + 3 * risk, "risk": risk, "rr": 2.0, "trigger": "buy-stop"}
 
 
-def pullback_setup(candles: list, ind: dict, i: int) -> Optional[dict]:
+def pullback_setup(candles: list, ind: dict, i: int, max_stop_pct: Optional[float] = None) -> Optional[dict]:
     """Setup B. A bullish reversal candle that dipped into the 20/50-EMA zone with RSI between 45 and 60. Entry = the close (limit next session), stop = zone low - 1 ATR,
     T1 = the recent swing high (setup suppressed when that is under 1:2), T2 = 3R."""
     c, a = candles[i], ind["atr"][i]
@@ -190,6 +192,8 @@ def pullback_setup(candles: list, ind: dict, i: int) -> Optional[dict]:
     if not (entry > stop):
         return None
     risk = entry - stop
+    if max_stop_pct is not None and risk / entry * 100 > max_stop_pct:
+        return None                                    # stop too far below the entry: no setup (`max_stop_pct` None = no cap, as in the backtest)
     t1 = max(x["h"] for x in candles[max(0, i - 30): i])
     if not (t1 - entry >= 2 * risk):
         return None

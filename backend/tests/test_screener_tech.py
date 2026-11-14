@@ -244,3 +244,17 @@ def test_stop_before_target_inside_one_bar():
     t = trade()
     ex = st.advance(t, 100, 112, 94, 100)                                                   # both the stop and T1 are inside the bar: pessimistic order
     assert ex == [(95.0, 1000, "STOP")]
+
+
+def test_max_stop_cap_drops_setups_with_a_far_stop():
+    hot = with_base_and_breakout()
+    ind = st.indicators(hot)
+    s = st.breakout_setup(hot, ind, len(hot) - 1)
+    pct = s["risk"] / s["entry"] * 100
+    assert st.breakout_setup(hot, ind, len(hot) - 1, max_stop_pct=pct + 0.01) is not None
+    assert st.breakout_setup(hot, ind, len(hot) - 1, max_stop_pct=pct - 0.01) is None
+    cs, ind, i = pullback_fixture()
+    p = st.pullback_setup(cs, ind, i)
+    ppct = p["risk"] / p["entry"] * 100
+    assert st.pullback_setup(cs, ind, i, max_stop_pct=ppct + 0.01) is not None
+    assert st.pullback_setup(cs, ind, i, max_stop_pct=ppct - 0.01) is None

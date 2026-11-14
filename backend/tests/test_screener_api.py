@@ -215,3 +215,11 @@ def test_follow_up_steps_are_independent(monkeypatch):
     calls.clear()
     asyncio.run(sc.follow_up(None, _feed_rows(), sc.DEFAULTS))
     assert calls == ["screener"]                                                    # the scan list is untouched unless switched on
+
+
+def test_screener_applies_the_stop_cap():
+    assert sc.DEFAULTS["max_stop_pct"] == 8.0
+    loose = [r["setup"] for r in run(settings={"max_stop_pct": 30}) if r["setup"]]
+    tight = [r["setup"] for r in run(settings={"max_stop_pct": 0.01}) if r["setup"]]
+    assert tight == [] and all((s["entry"] - s["stop"]) / s["entry"] * 100 <= 30 for s in loose)
+    assert sc.clean_settings({"max_stop_pct": 99}, dict(sc.DEFAULTS))["max_stop_pct"] == 30

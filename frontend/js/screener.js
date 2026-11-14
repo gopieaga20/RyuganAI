@@ -81,7 +81,7 @@ function detail(r) {
   for (const c of checklist(r)) (groups[c.group] ||= []).push(c);
   const mark = { pass: '✓', fail: '✗', na: '–' };
   const cols = Object.entries(groups).map(([g, items]) => `<div class="scr-col"><div class="sc-l">${g}</div>${items.map(c =>
-    `<div class="scr-chk scr-${c.state}"><span>${mark[c.state]}</span> ${DOM.esc(c.label)}${c.value !== null && c.value !== undefined ? ` <i>${DOM.esc(typeof c.value === 'number' ? num(c.value, 1) : c.value)}</i>` : ''}${c.state === 'na' ? ' <i>no data source</i>' : ''}</div>`).join('')}</div>`).join('');
+    `<div class="scr-chk scr-${c.state}"><span>${mark[c.state]}</span> ${DOM.esc(c.label)}${c.value !== null && c.value !== undefined ? ` <i>${DOM.esc(typeof c.value === 'number' ? num(c.value, 1) : c.value)}</i>` : ''}${c.state === 'na' && !/no data source/.test(c.label) ? ' <i>not available</i>' : ''}</div>`).join('')}</div>`).join('');
   const m = r.metrics;
   const asof = m ? `Fundamentals as of ${m.as_of || 'unknown'} (${ageText(m.as_of)})${m.stale ? ' — too old to score' : ''}.` : 'No fundamentals fetched yet for this stock: press "Refresh fundamentals".';
   return `<div class="scr-detail-grid">${cols}</div><div class="sc-s" style="margin-top:8px">${asof} ${r.setup ? DOM.esc(setupText(r.setup)) + '. ' + DOM.esc(r.setup.invalidation) : 'No trade setup today.'}${r.deliv_per != null ? ` Delivery ${num(r.deliv_per, 1)}%.` : ''}</div>`;
