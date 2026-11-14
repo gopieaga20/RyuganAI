@@ -30,7 +30,8 @@ const f2 = x => (Number.isFinite(x) ? x.toFixed(2) : '--');
 
 /** @param candles [{ts,o,h,l,c,v}] oldest first, needs ~60+ bars
  *  @param opts {intraday:boolean, news:{label}|null, swingK:number,
- *              minAdx, callScore, weights:{id:number}, disable:[id]}  (the last four exist for backtesting/tuning) */
+ *              minAdx, callScore, weights:{id:number}, disable:[id], callRule:'score'|'all'}
+ *  callRule 'all': every switched-on strategy that carries weight must vote the same way (default 'score': the weighted score reaches +-callScore) */
 export function evaluate(candles, opts = {}) {
   const n = candles.length;
   if (n < 60) return { ok: false, reason: `Need at least 60 candles (have ${n})`, votes: [], call: 'WAIT', confidence: 0, score: 0, maxScore: 0 };
@@ -116,6 +117,12 @@ export function evaluate(candles, opts = {}) {
   let call = 'WAIT', why = '';
   if (maxScore <= 0) why = 'No strategy with a vote weight is switched on';
   else if (adx < minAdx) why = `ADX ${adx.toFixed(0)} is below ${minAdx}: range-bound, no call`;
+  else if (opts.callRule === 'all') {
+    const voters = votes.filter(v => v.weight > 0).map(v => v.vote);
+    if (voters.every(x => x === 1)) call = 'BUY CE';
+    else if (voters.every(x => x === -1)) call = 'BUY PE';
+    else why = `Not every switched-on strategy agrees (${voters.filter(x => x === 1).length} up, ${voters.filter(x => x === -1).length} down, ${voters.filter(x => x === 0).length} neutral)`;
+  }
   else if (score >= callScore) call = 'BUY CE';
   else if (score <= -callScore) call = 'BUY PE';
   else why = `Votes are mixed (score ${score > 0 ? '+' : ''}${score} of ±${maxScore})`;

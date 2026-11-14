@@ -5,7 +5,7 @@ import { subscribeLivePrices } from './ws-prices.js';
 import { Indicators } from './indicators.js';
 import { buildStructure } from './smc-structure.js';
 import { evaluate } from './strategies.js';
-import { getDisabled } from './strategy-prefs.js';
+import { getDisabled, getCallRule } from './strategy-prefs.js';
 import { sessionLevels } from './sr.js';
 import { buildSmc } from './smc.js';
 import { toCandles, vwapIst } from './candles.js';
@@ -210,7 +210,7 @@ export const ChartView = (() => {
       // replay the vote over the most recent bars; mark where a CE/PE call first appears
       let prev = 'WAIT';
       for (let k = Math.max(60, cs.length - 90); k < cs.length; k++) {
-        const r = evaluate(cs.slice(0, k + 1), { intraday: state.tf.intraday, disable: getDisabled() });
+        const r = evaluate(cs.slice(0, k + 1), { intraday: state.tf.intraday, disable: getDisabled(), callRule: getCallRule() });
         if (r.ok && r.call !== 'WAIT' && prev !== r.call) {
           const ce = r.call === 'BUY CE';
           marks.push({ time: t(cs[k]), position: ce ? 'belowBar' : 'aboveBar', shape: ce ? 'arrowUp' : 'arrowDown', color: ce ? '#3ddc97' : '#ff6b6b', text: r.call, size: 2 });

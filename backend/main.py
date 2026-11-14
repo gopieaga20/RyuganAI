@@ -132,7 +132,8 @@ async def _autotrade_deps(pool=None) -> "autotrader.Deps":
 
     return autotrader.Deps(fetch_candles=candles, fetch_headlines=headlines, get_contracts=contracts,
                            get_lot_size=lot, fetch_ltp=_fetch_ltp, fetch_events=events,
-                           disabled_strategies=await account.disabled_strategies(pool) if pool is not None else None)
+                           disabled_strategies=await account.disabled_strategies(pool) if pool is not None else None,
+                           call_rule=await account.call_rule(pool) if pool is not None else "score")
 
 
 _autotrade_state = {"last_run": None, "next_run": None, "running": False}
@@ -922,6 +923,7 @@ class SymbolSetting(BaseModel):
     enabled: Optional[bool] = None
     max_per_day: Optional[int] = Field(default=None, ge=1, le=50)
     product: Optional[str] = Field(default=None, pattern="^(INTRADAY|CARRYFORWARD)$")
+    auto_stocks: Optional[bool] = None
     premium_per_trade: Optional[int] = Field(default=None, ge=0, le=500000)
     sl_cooldown_min: Optional[int] = Field(default=None, ge=0, le=375)
 
@@ -957,14 +959,14 @@ def _settings_view(cfg: dict) -> dict:
             "default": {"sl_pct": cfg["sl_pct"], "tp_pct": cfg["tp_pct"], "lots": default_lots,
                         "max_per_day": cfg["nifty_max_per_day"] if und == "NIFTY" else cfg["stock_max_per_day"],
                         "product": autotrader.DEFAULT_SYMBOLS.get(und or "", {}).get("product", cfg["product"]),
-                        "enabled": autotrader.DEFAULT_SYMBOLS.get(und or "", {}).get("enabled", True)},
+                        "enabled": autotrader.DEFAULT_SYMBOLS.get(und or "", {}).get("enabled", autotrader.default_enabled(cfg, und))},
             "value": {"sl_pct": sp["sl_pct"], "tp_pct": sp["tp_pct"], "lots": sp["lots"] or default_lots, "enabled": sp["enabled"],
                       "max_per_day": sp["max_per_day"], "product": sp["product"]},
         })
     return {"settings": {k: cfg[k] for k in ("min_confidence", "max_positions", "max_trades_per_day", "sl_pct", "tp_pct", "lots", "universe",
                                                               "nifty_max_per_day", "stock_max_per_day", "product",
                                                               "max_same_direction", "max_stops_per_day", "nifty_agree",
-                                                              "premium_per_trade", "sl_cooldown_min")},
+                                                              "premium_per_trade", "sl_cooldown_min", "auto_stocks", "entry_from_min", "entry_to_min")},
             "symbols": rows}
 
 
@@ -1069,13 +1071,13 @@ async def outcomes_recent(request: Request, limit: int = 50):
 async def autotrade_run(request: Request, dry: bool = True, as_if_open: bool = False):
     """Run one scan now. `dry=true` (default) only reports what it WOULD order; `dry=false` really orders,
     and only if auto-trading is switched on. `as_if_open=true` (dry runs only) evaluates the entry window as if
-    it were 10:00 IST today, to preview what would happen during market hours."""
+    it were 12:00 IST today, to preview what would happen during market hours."""
     pool = _get_pool(request)
     if not dry:
         cfg = await autotrader.load_settings(pool)
         if not cfg["enabled"]:
             raise HTTPException(status_code=400, detail="Auto-trading is off. Switch it on first, or run with dry=true.")
-    now = autotrader.now_ist().replace(hour=10, minute=30) if (dry and as_if_open) else None
+    now = autotrader.now_ist().replace(hour=12, minute=0) if (dry and as_if_open) else None
     decisions = await _run_autotrade_cycle(pool, dry=dry, now=now)
     return {"dry": dry, "decisions": decisions}
 

@@ -521,8 +521,9 @@ def sr_signal(candles, i, k=3):
 
 
 # ───────────── the vote (same rules as strategies.js evaluate) ─────────────
-def evaluate(candles, intraday: bool = True, news_label: Optional[str] = None, swing_k: int = 3, disable=None) -> dict:
-    """`disable`: strategy ids left out of the vote (Profile > Strategies). Same rule as strategies.js `opts.disable`."""
+def evaluate(candles, intraday: bool = True, news_label: Optional[str] = None, swing_k: int = 3, disable=None, rule: str = "score") -> dict:
+    """`disable`: strategy ids left out of the vote (Profile > Strategies). `rule`: "score" = the weighted score must reach +-3; "all" = every switched-on
+    strategy that carries weight must vote the same way. Same rules as strategies.js `opts.disable` / `opts.callRule`."""
     n = len(candles)
     if n < 60:
         return {"ok": False, "reason": f"Need at least 60 candles (have {n})", "votes": [], "call": "WAIT",
@@ -619,6 +620,14 @@ def evaluate(candles, intraday: bool = True, news_label: Optional[str] = None, s
         why = "No strategy with a vote weight is switched on"
     elif adx_v < MIN_ADX:
         why = f"ADX {adx_v:.0f} is below {MIN_ADX}: range-bound, no call"
+    elif rule == "all":
+        voters = [v["vote"] for v in votes if v["weight"] > 0]
+        if all(x == 1 for x in voters):
+            call = "BUY CE"
+        elif all(x == -1 for x in voters):
+            call = "BUY PE"
+        else:
+            why = f"Not every switched-on strategy agrees ({sum(1 for x in voters if x == 1)} up, {sum(1 for x in voters if x == -1)} down, {sum(1 for x in voters if x == 0)} neutral)"
     elif score >= CALL_SCORE:
         call = "BUY CE"
     elif score <= -CALL_SCORE:

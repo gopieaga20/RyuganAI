@@ -284,14 +284,29 @@ def test_profile_name_and_email_change(client):
 def test_strategy_toggles_are_saved_and_validated(client):
     register(client)
     s = client.get("/api/profile/settings").json()
-    assert all(x["enabled"] for x in s["strategies"]) and {x["id"] for x in s["strategies"]} >= {"trend", "smc", "sr", "news"}
+    assert {x["id"] for x in s["strategies"] if x["enabled"]} == {"vwap"} and s["call_rule"] == "all"      # the defaults (VWAP alone)
+    assert {x["id"] for x in s["strategies"]} >= {"trend", "smc", "sr", "news"}
     r = client.patch("/api/profile/settings", json={"strategies_enabled": ["trend", "rsi"]}, headers=H)
-    on = {x["id"] for x in r.json()["strategies"] if x["enabled"]}
-    assert on == {"trend", "rsi"}
-    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["sr"]}, headers=H).status_code == 422       # weight 0 only
-    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["rsi", "vwap"]}, headers=H).status_code == 422   # weights 1+1 < 3: no call possible
+    assert {x["id"] for x in r.json()["strategies"] if x["enabled"]} == {"trend", "rsi"}
+    # under the default rule (all must agree) any strategy that carries weight is enough; support/resistance (weight 0) or nothing is not
+    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["sr"]}, headers=H).status_code == 422
     assert client.patch("/api/profile/settings", json={"strategies_enabled": []}, headers=H).status_code == 422
+    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["rsi", "vwap"]}, headers=H).status_code == 200
+    # the weighted-score rule needs their weights to add up to 3, and switching the rule is checked against the list already saved
+    assert client.patch("/api/profile/settings", json={"call_rule": "score"}, headers=H).status_code == 422            # rsi 1 + vwap 1 = 2 < 3
+    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["trend", "rsi"], "call_rule": "score"}, headers=H).json()["call_rule"] == "score"
+    assert client.patch("/api/profile/settings", json={"strategies_enabled": ["rsi", "vwap"]}, headers=H).status_code == 422   # still the score rule
+    assert client.patch("/api/profile/settings", json={"call_rule": "bogus"}, headers=H).status_code == 422
+    assert client.get("/api/profile/settings").json()["call_rule"] == "score"
     assert {x["id"] for x in client.get("/api/profile/settings").json()["strategies"] if x["enabled"]} == {"trend", "rsi"}
+    assert client.patch("/api/profile/settings", json={"call_rule": "all"}, headers=H).json()["call_rule"] == "all"
+
+
+def test_the_scan_gets_the_default_strategies_and_rule(client, pool):
+    import asyncio
+    register(client)
+    deps = asyncio.run(main._autotrade_deps(pool))
+    assert sorted(deps.disabled_strategies) == ["fvg", "news", "rsi", "smc", "sr", "structure", "trend", "volume"] and deps.call_rule == "all"
 
 
 def test_live_is_refused_until_the_owner_allows_it_with_their_password(client, monkeypatch):

@@ -28,6 +28,7 @@ function say(id, text, ok = true) {
   el.textContent = text;
 }
 
+const DEFAULT_SET = ['vwap'];                 // same as backend/account.py DEFAULT_ENABLED
 const WHAT = {
   trend: 'Three moving averages stacked in order, price above (or below) all of them',
   rsi: 'RSI 55-75 bullish, 25-45 bearish; the extremes are ignored',
@@ -102,6 +103,7 @@ function weightOf(id) { return (settings?.strategies || []).find(s => s.id === i
 
 function renderStrategies() {
   const body = $('pf-strat-body'); if (!body || !settings) return;
+  $('pf-call-rule').value = settings.call_rule === 'score' ? 'score' : 'all';
   body.innerHTML = STRATEGIES.map(s => {
     const on = (settings.strategies.find(x => x.id === s.id)?.enabled) !== false;
     return `<tr class="${on ? '' : 'off'}" data-id="${s.id}"><td><label class="at-switch-wrap sm"><input type="checkbox" class="pf-strat-on" ${on ? 'checked' : ''}><span class="at-slider"></span></label></td>
@@ -113,18 +115,22 @@ function renderStrategies() {
 function chosen() { return [...document.querySelectorAll('#pf-strat-body tr')].filter(tr => tr.querySelector('.pf-strat-on').checked).map(tr => tr.dataset.id); }
 
 function stratSummary() {
-  const ids = chosen(), total = ids.reduce((a, i) => a + weightOf(i), 0), el = $('pf-strat-sum');
+  const ids = chosen(), total = ids.reduce((a, i) => a + weightOf(i), 0), el = $('pf-strat-sum'), all = $('pf-call-rule').value === 'all';
+  const voters = ids.filter(i => weightOf(i) > 0).length;
   document.querySelectorAll('#pf-strat-body tr').forEach(tr => tr.classList.toggle('off', !tr.querySelector('.pf-strat-on').checked));
-  const ok = total >= CALL_SCORE;
+  const ok = all ? voters > 0 : total >= CALL_SCORE;
   el.classList.toggle('bad', !ok);
-  el.textContent = ok ? `${ids.length} of ${STRATEGIES.length} on. Maximum score ${total}; a call needs ±${CALL_SCORE}.`
-    : `Maximum score would be ${total}: a call needs ±${CALL_SCORE}, so no call could ever appear. Switch more strategies on.`;
+  el.textContent = all
+    ? (ok ? `${ids.length} of ${STRATEGIES.length} on. A call needs all ${voters} that carry weight to agree. The more you switch on, the rarer the calls.`
+      : 'No strategy with a vote weight is on, so no call could ever appear. Switch one on.')
+    : (ok ? `${ids.length} of ${STRATEGIES.length} on. Maximum score ${total}; a call needs ±${CALL_SCORE}.`
+      : `Maximum score would be ${total}: a call needs ±${CALL_SCORE}, so no call could ever appear. Switch more strategies on.`);
   $('pf-save-strat').disabled = !ok;
 }
 
 async function saveStrategies() {
   try {
-    settings = await api('/api/profile/settings', 'PATCH', { strategies_enabled: chosen() });
+    settings = await api('/api/profile/settings', 'PATCH', { strategies_enabled: chosen(), call_rule: $('pf-call-rule').value });
     applySettings(settings); renderStrategies();
     say('pf-strat-msg', 'Saved. The dashboard updates now; the auto-scanner uses it from its next scan.');
   } catch (e) { say('pf-strat-msg', e.message, false); }
@@ -246,7 +252,9 @@ export async function initProfile(user) {
   $('pf-signout').addEventListener('click', signOut);
   $('pf-save-strat').addEventListener('click', saveStrategies);
   $('pf-all-strat').addEventListener('click', () => { document.querySelectorAll('.pf-strat-on').forEach(c => { c.checked = true; }); stratSummary(); });
+  $('pf-default-strat')?.addEventListener('click', () => { document.querySelectorAll('#pf-strat-body tr').forEach(tr => { tr.querySelector('.pf-strat-on').checked = DEFAULT_SET.includes(tr.dataset.id); }); $('pf-call-rule').value = 'all'; stratSummary(); });
   $('pf-strat-body').addEventListener('change', stratSummary);
+  $('pf-call-rule').addEventListener('change', stratSummary);
   wireLive(); wireAi();
   document.addEventListener('prefs-changed', applyLiveVisibility);
   await loadPrefs();

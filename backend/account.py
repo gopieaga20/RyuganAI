@@ -20,7 +20,11 @@ import strategy_vote
 
 router = APIRouter()
 hooks: dict = {"live_off": None}                       # type: dict[str, Optional[Callable]]
-_cache: dict = {"live": None, "enabled": None}          # loaded on first use, refreshed whenever the owner saves
+_cache: dict = {"live": None, "enabled": None, "rule": None}   # loaded on first use, refreshed whenever the owner saves
+# The default strategy set and rule (set 14 Nov 2026): VWAP alone. Backtests (4 years, 34 symbols, same-day exit, reports/vwap_stress_test_slots99_1500d.md): VWAP alone
+# +150 Rs per trade before a spread, +50 with a 1% round-trip spread, -50 with 2%, positive in both halves; every combination with Structure, FVG, SMC or EMA trend was worse.
+DEFAULT_ENABLED = ["vwap"]
+CALL_RULES = ("all", "score")
 
 
 def _pool(request: Request):
@@ -52,8 +56,25 @@ async def enabled_strategies(pool) -> list:
         except ValueError:
             ids = None
         known = all_strategy_ids()
-        _cache["enabled"] = [i for i in known if i in ids] if isinstance(ids, list) else known
+        _cache["enabled"] = [i for i in known if i in (ids if isinstance(ids, list) else DEFAULT_ENABLED)]
     return list(_cache["enabled"])
+
+
+async def call_rule(pool) -> str:
+    """How the switched-on strategies combine into a call: 'all' (every one must agree, the default) or 'score' (weighted score of +-3)."""
+    if _cache["rule"] is None:
+        v = await auth.get_setting(pool, "profile.call_rule", "all")
+        _cache["rule"] = v if v in CALL_RULES else "all"
+    return _cache["rule"]
+
+
+def rule_problem(ids: list, rule: str):
+    """Why this set of strategies could never produce a call under `rule`, or None."""
+    weights = [strategy_vote.STRATEGIES[i] for i in ids]
+    if rule == "all":
+        return None if any(w > 0 for w in weights) else "Keep at least one strategy with a vote weight switched on (support/resistance has weight 0)."
+    return None if sum(weights) >= strategy_vote.CALL_SCORE else (
+        f"With the weighted-score rule the switched-on strategies' vote weights must add up to at least {strategy_vote.CALL_SCORE} (support/resistance has weight 0).")
 
 
 async def disabled_strategies(pool) -> list:
@@ -67,7 +88,7 @@ async def disabled_strategies(pool) -> list:
 
 
 def reset_cache() -> None:
-    _cache.update(live=None, enabled=None)
+    _cache.update(live=None, enabled=None, rule=None)
 
 
 # ───────────── models ─────────────
@@ -93,6 +114,7 @@ class SettingsPatch(BaseModel):
     live_allowed: Optional[bool] = None
     password: Optional[str] = Field(default=None, max_length=200)       # required to switch live trading ON
     strategies_enabled: Optional[list[str]] = Field(default=None, max_length=50)
+    call_rule: Optional[str] = Field(default=None, pattern="^(all|score)$")
 
 
 async def _need_user(request: Request) -> dict:
@@ -205,7 +227,7 @@ async def patch_profile(body: ProfilePatch, request: Request):
 
 async def settings_view(pool) -> dict:
     on = await enabled_strategies(pool)
-    return {"signups_open": await auth.signups_open(pool), "live_allowed": await live_allowed(pool),
+    return {"signups_open": await auth.signups_open(pool), "live_allowed": await live_allowed(pool), "call_rule": await call_rule(pool),
             "strategies": [{"id": i, "weight": w, "enabled": i in on} for i, w in strategy_vote.STRATEGIES.items()]}
 
 
@@ -219,13 +241,18 @@ async def get_settings(request: Request):
 async def patch_settings(body: SettingsPatch, request: Request):
     user = await _need_owner(request)
     pool = _pool(request)
-    if body.strategies_enabled is not None:
-        ids = [i for i in all_strategy_ids() if i in set(body.strategies_enabled)]
-        if sum(strategy_vote.STRATEGIES[i] for i in ids) < strategy_vote.CALL_SCORE:
-            raise HTTPException(status_code=422, detail=f"Keep enough strategies on for a call to be possible: their vote weights must add up to at least "
-                                                        f"{strategy_vote.CALL_SCORE} (support/resistance has weight 0).")
-        await auth.set_setting(pool, "profile.strategies_enabled", json.dumps(ids))
-        _cache["enabled"] = ids
+    if body.strategies_enabled is not None or body.call_rule is not None:
+        ids = [i for i in all_strategy_ids() if i in set(body.strategies_enabled)] if body.strategies_enabled is not None else await enabled_strategies(pool)
+        rule = body.call_rule or await call_rule(pool)
+        bad = rule_problem(ids, rule)
+        if bad:
+            raise HTTPException(status_code=422, detail=bad)
+        if body.strategies_enabled is not None:
+            await auth.set_setting(pool, "profile.strategies_enabled", json.dumps(ids))
+            _cache["enabled"] = ids
+        if body.call_rule is not None:
+            await auth.set_setting(pool, "profile.call_rule", rule)
+            _cache["rule"] = rule
     if body.signups_open is not None:
         await auth.set_setting(pool, "profile.signups_open", "1" if body.signups_open else "0")
     if body.live_allowed is not None:

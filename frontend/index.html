@@ -1171,6 +1171,13 @@
         <div class="pf-panel" id="pf-strategies" style="display:none">
           <div class="card mb12">
             <div class="card-title">Strategies <span class="muted small">(only the switched-on ones vote on a BUY CE / BUY PE call: auto-trader, alerts, dashboard and chart)</span></div>
+            <div class="at-set-grid pf-grid" style="margin-bottom:10px">
+              <label title="How the switched-on strategies turn into a call">How they combine
+                <select id="pf-call-rule">
+                  <option value="all">All switched-on strategies must agree (default)</option>
+                  <option value="score">Weighted score (needs +-3, ADX 20+)</option>
+                </select></label>
+            </div>
             <div class="tbl-wrap">
               <table class="dtbl keep-table pf-strat-table">
                 <thead><tr><th>On</th><th>Strategy</th><th>Vote weight</th><th>What it looks at</th></tr></thead>
@@ -1180,10 +1187,11 @@
             <div class="pf-strat-sum small" id="pf-strat-sum"></div>
             <div class="at-set-actions">
               <button type="button" class="btn btn-primary btn-sm" id="pf-save-strat">Save strategies</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="pf-default-strat" title="VWAP alone (the backtested default)">Back to default</button>
               <button type="button" class="btn btn-ghost btn-sm" id="pf-all-strat">Switch all on</button>
               <span class="small" id="pf-strat-msg"></span>
             </div>
-            <p class="muted small" style="margin:8px 0 0">A call needs a score of at least 3 (up or down) from the switched-on strategies, and ADX of 20 or more. The next auto-scan (every 5 minutes) uses the new list. Past results in the Outcome log were made with whatever list was on at the time.</p>
+            <p class="muted small" style="margin:8px 0 0">With "all must agree" a call needs every switched-on strategy that carries weight to vote the same way (confidence 95%), and ADX of 20 or more. With the weighted score it needs a score of at least 3 (up or down). The next auto-scan (every 5 minutes) uses the new list. Past results in the Outcome log were made with whatever list was on at the time.</p>
             <p class="muted small" style="margin:6px 0 0">Smart money follows the open-source "Smart Money Concepts" indicator by LuxAlgo (CC BY-NC-SA 4.0), ported to this app. The call rule on top of it is ours.</p>
           </div>
         </div>
@@ -1360,6 +1368,7 @@
               <label title="After this many stop-losses today, no new auto trade is opened until tomorrow. 0 = no limit">Stop-losses a day, then pause<input id="as-stopsday" type="number" min="0" max="10" step="1"></label>
               <label title="Rupees of option premium per auto trade, rounded down to whole lots (at least one lot). Keeps every trade about the same size, so one stop-loss cannot wipe out several targets. 0 = use the lots instead">Premium per trade (Rs)<input id="as-budget" type="number" min="0" max="500000" step="1000"></label>
               <label title="After a stop-loss, no new auto trade on the same stock or index for this many minutes. 0 = no wait">Wait after a stop-loss (min)<input id="as-cooldown" type="number" min="0" max="375" step="5"></label>
+              <label class="as-check" title="Off (default): only Nifty 50 and Bank Nifty are traded automatically; stocks give calls and alerts only. Stock options have wider spreads than the index options. A tick in the per-stock table below still wins"><span>Auto-trade stocks</span><input id="as-auto-stocks" type="checkbox"></label>
               <label class="as-check" title="A stock call is taken only when the Nifty's own signal points the same way"><span>Stock must agree with Nifty</span><input id="as-niftyagree" type="checkbox"></label>
               <label title="Intraday positions are squared off at 15:15 IST. Carry-forward positions stay open until the stop or target is hit">Product
                 <select id="as-product"><option value="CARRYFORWARD">Carry-forward (NRML)</option><option value="INTRADAY">Intraday (MIS)</option></select></label>

@@ -4,25 +4,30 @@
 
 import { CONFIG } from './config.js';
 
-const state = { disabled: [], liveAllowed: false, loaded: false };
+// Same defaults as backend/account.py until the server answers: VWAP alone.
+export const DEFAULT_ENABLED = ['vwap'];
+const ALL_IDS = ['trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume', 'smc', 'sr', 'news'];
+const state = { disabled: ALL_IDS.filter(i => !DEFAULT_ENABLED.includes(i)), callRule: 'all', liveAllowed: false, loaded: false };
 
 /** [{id, enabled}] from /api/profile/settings -> ids that are switched off. Pure. */
 export const disabledFrom = settings => (settings?.strategies || []).filter(s => !s.enabled).map(s => s.id);
 
 export const getDisabled = () => state.disabled.slice();
+export const getCallRule = () => state.callRule;
 export const isLiveAllowed = () => state.liveAllowed;
 export const prefsLoaded = () => state.loaded;
 
 /** Take new settings from the server and tell the page (dashboard, chart and scanner re-run their votes). */
 export function applySettings(settings) {
   if (!settings) return;
-  const before = state.disabled.join(',');
+  const before = state.disabled.join(',') + '|' + state.callRule;
   state.disabled = disabledFrom(settings);
+  state.callRule = settings.call_rule === 'score' ? 'score' : 'all';
   state.liveAllowed = !!settings.live_allowed;
   state.loaded = true;
   if (typeof document !== 'undefined') {
     document.dispatchEvent(new CustomEvent('prefs-changed', { detail: { liveAllowed: state.liveAllowed } }));
-    if (before !== state.disabled.join(',')) document.dispatchEvent(new CustomEvent('strategies-changed'));
+    if (before !== state.disabled.join(',') + '|' + state.callRule) document.dispatchEvent(new CustomEvent('strategies-changed'));
   }
 }
 

@@ -16,7 +16,7 @@ Safety rules (all enforced in `decide`):
       - at most max_same_direction open positions betting the same way (CE = up, PE = down), default 2;
       - after max_stops_per_day stop-losses today (default 2) no new auto trade is opened until tomorrow;
       - a stock call must agree with the Nifty's own vote (nifty_agree, default on), so the bot does not buy calls on stocks while the index says down;
-  * entries only inside the entry window (default 10:15-14:30 IST; the opening 45 minutes are skipped). The product decides what happens at the close:
+  * entries only inside the entry window (default 11:30-14:30 IST; the first two hours are skipped: backtested VWAP entries before 11:30 were the weak ones). The product decides what happens at the close:
     CARRYFORWARD (default) stays open until its stop or target is hit (or the user exits it); INTRADAY is squared off at 15:15 IST.
 
 Everything that touches the database or the network goes through `Deps` / `Store`, so the logic is unit-tested
@@ -54,23 +54,29 @@ DEFAULTS = {
     "max_same_direction": 2,         # open auto positions allowed to bet the same way (all CE or all PE)
     "max_stops_per_day": 2,          # stop-losses today after which no new auto trade is opened (0 = no limit)
     "nifty_agree": True,             # a stock call must agree with the Nifty's own signal
-    "entry_from_min": 10 * 60 + 15,   # IST minutes since midnight
+    "entry_from_min": 11 * 60 + 30,   # IST minutes since midnight (11:30: entries before it backtested far weaker, see reports/vwap_stress_test_slots99_1500d.md)
+    "auto_stocks": False,            # False: only Nifty 50 and Bank Nifty are traded automatically, stocks give calls and alerts only (their option spreads can eat the edge)
     "entry_to_min": 14 * 60 + 30,
     "min_days_to_expiry": 1,         # skip contracts that expire today
     "universe": DEFAULT_UNIVERSE,
     "symbols": {},                   # per-underlying overrides, e.g. {"RELIANCE": {"sl_pct": .2, "tp_pct": .4, "lots": 2, "enabled": true}}
 }
 
-# Built-in per-underlying defaults from reports/reversal_study.md (2 years of 15m data, modelled options): same-day square-off cut the average
-# loss on stocks from -379 to -54 Rs/trade; Nifty 50 was the only index with a steady positive result (kept to stop/target); Bank Nifty and
-# the bank stocks lost money on both halves of the period, so they are alert-only until the user switches them on in Settings.
-# Nifty is INTRADAY too since 13 Nov: in paper trading 4 of 6 positions carried overnight lost at the 09:15 gap, some beyond the stop.
-DEFAULT_SYMBOLS = {"BANKNIFTY": {"enabled": False}, "HDFCBANK": {"enabled": False}, "ICICIBANK": {"enabled": False}, "SBIN": {"enabled": False}}
+# Built-in per-underlying defaults. Nifty 50 and Bank Nifty trade automatically (the tightest option spreads, and the strongest VWAP results in
+# reports/vwap_stress_test_slots99_1500d.md); every other underlying is alert-only until "Auto-trade stocks" is switched on or the stock is ticked in
+# Settings. A per-stock tick or untick always wins. Same-day exit is the global default product (overnight gaps cost more than carrying earned).
+INDEX_UNDERLYINGS = ("NIFTY", "BANKNIFTY")
+DEFAULT_SYMBOLS: dict = {}
+
+
+def default_enabled(cfg: dict, und) -> bool:
+    return und in INDEX_UNDERLYINGS or bool(cfg.get("auto_stocks"))
+
 
 # What the user can change (Paper Trading page -> Settings). Everything else always comes from the code defaults above.
 USER_KEYS = {"enabled", "min_confidence", "max_positions", "max_trades_per_day", "universe", "sl_pct", "tp_pct", "lots", "symbols",
              "nifty_max_per_day", "stock_max_per_day", "product", "max_same_direction", "max_stops_per_day", "nifty_agree",
-             "premium_per_trade", "sl_cooldown_min"}
+             "premium_per_trade", "sl_cooldown_min", "auto_stocks"}
 PRODUCTS = ("INTRADAY", "CARRYFORWARD")
 SQUAREOFF_MIN = 15 * 60 + 15      # INTRADAY auto positions are closed from 15:15 IST
 # The first version of the settings row saved the WHOLE config (including old stop/target values), so when it is migrated
@@ -201,7 +207,7 @@ def direction_of_contract(symbol: str) -> int:
 
 def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_candle: bool = False, orders_today: int = 0,
            by_und: Optional[dict] = None, nifty_score: Optional[float] = None, stops_today: int = 0,
-           last_stops: Optional[dict] = None, events: Optional[dict] = None) -> tuple:
+           last_stops: Optional[dict] = None, events: Optional[dict] = None, nifty_need: float = 2) -> tuple:
     """Return (take_it, reason). The first failing rule is the reason.
     `orders_today` is the number of auto orders today for stocks other than Nifty (the shared daily cap);
     `by_und` is {underlying: orders today}, for the per-underlying daily limit."""
@@ -221,7 +227,7 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
         return False, f"already {len(open_auto)} auto positions open (max {cfg['max_positions']})"
     sp = symbol_params(cfg, und)
     if not sp["enabled"]:
-        return False, f"auto-trading is switched off for {und} in Settings"
+        return False, f"auto-trading is switched off for {und} in Settings" + ("" if und in INDEX_UNDERLYINGS or cfg.get("auto_stocks") else " (stocks are alert-only unless 'Auto-trade stocks' is on)")
     if any(underlying_from_contract(p["symbol"]) == und for p in open_auto):
         return False, (f"Nifty already has an open position: waiting for it to hit its target or stop" if und == "NIFTY"
                        else f"{und} already has an open auto position")
@@ -248,7 +254,7 @@ def decide(result: dict, cfg: dict, open_auto: list, now: dt.datetime, acted_on_
     if limit and same >= limit:
         return False, (f"{same} {'call (CE)' if direction > 0 else 'put (PE)'} positions already open (limit {limit} the same way): "
                        "stocks tend to move together, so they would all stop out together")
-    if cfg.get("nifty_agree", True) and und not in ("NIFTY", "BANKNIFTY") and nifty_score is not None and nifty_score * direction < 2:
+    if cfg.get("nifty_agree", True) and und not in ("NIFTY", "BANKNIFTY") and nifty_score is not None and nifty_score * direction < nifty_need:
         return False, f"the Nifty's own signal ({nifty_score:+g}) does not agree with this {'call' if direction > 0 else 'put'}"
     return True, "ok"
 
@@ -263,6 +269,7 @@ class Deps:
     fetch_ltp: Callable[[str], Awaitable[Optional[float]]]
     fetch_events: Optional[Callable[[dt.date], Awaitable[dict]]] = None   # date -> {underlying: purpose} (board meetings, results)
     disabled_strategies: Optional[list] = None                            # strategy ids the owner switched off in Profile > Strategies
+    call_rule: str = "score"                                              # 'all' = every switched-on strategy must agree; 'score' = weighted score of +-3
 
 
 class Store:
@@ -296,8 +303,8 @@ async def scan_symbol(sym: str, deps: Deps) -> dict:
             return {"sym": sym, "ok": False, "call": "WAIT", "confidence": 0,
                     "note": f"no usable 15m data ({c15 if isinstance(c15, Exception) else len(c15)})"}
         label = news_label(heads) if not isinstance(heads, Exception) else None
-        r15 = sv.evaluate(c15, intraday=True, news_label=label, disable=off)
-        r5 = sv.evaluate(c5, intraday=True, disable=off) if not isinstance(c5, Exception) and len(c5) >= 60 else None
+        r15 = sv.evaluate(c15, intraday=True, news_label=label, disable=off, rule=deps.call_rule)
+        r5 = sv.evaluate(c5, intraday=True, disable=off, rule=deps.call_rule) if not isinstance(c5, Exception) and len(c5) >= 60 else None
         fin = sv.combine(r15, r5)
         fin["sym"] = sym
         fin["candle_ts"] = c15[-1]["ts"]
@@ -327,7 +334,10 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             events = await deps.fetch_events(now.date()) or {}
         except Exception as e:                    # the calendar is a filter: without it, trade as before
             print(f"[WARN] event calendar unavailable: {e}")
-    nifty_score = next((r.get("score") for r in results if underlying_of(r["sym"]) == "NIFTY" and r.get("ok", True) and r.get("score") is not None), None)
+    nifty_row = next((r for r in results if underlying_of(r["sym"]) == "NIFTY" and r.get("ok", True) and r.get("score") is not None), None)
+    nifty_score = nifty_row.get("score") if nifty_row else None
+    # "agrees" means 2 weighted points; with few strategies switched on (VWAP alone has a maximum of 1) it means the full score, i.e. the same side
+    nifty_need = min(2, nifty_row.get("maxScore") or 2) if nifty_row else 2
     previewed = []                      # a dry run counts what it WOULD open, so the position limit still applies
     # strongest calls first, so the position limit goes to the best ones
     for r in sorted(results, key=lambda x: (x.get("call") == "WAIT", -(x.get("confidence") or 0))):
@@ -339,7 +349,7 @@ async def run_cycle(store: Store, cfg: dict, deps: Deps, now: Optional[dt.dateti
             open_auto = await store.open_auto_positions() + previewed
             acted = bool(r.get("candle_ts")) and await store.acted_on(r["sym"], r["candle_ts"])
             others = sum(n for u, n in by_und.items() if u != "NIFTY")
-            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und, nifty_score, stops, last_stops, events)
+            ok, why = decide(r, cfg, open_auto, now, acted, others, by_und, nifty_score, stops, last_stops, events, nifty_need)
             row["detail"] = ""
             if not ok:
                 row["detail"] = why
@@ -398,7 +408,7 @@ def symbol_params(cfg: dict, und: Optional[str]) -> dict:
     default_cap = cfg.get("nifty_max_per_day", 10) if und == "NIFTY" else cfg.get("stock_max_per_day", 1)
     product = ov.get("product") or (cfg.get("product") if cfg.get("product") in PRODUCTS else "INTRADAY")
     return {"sl_pct": ov.get("sl_pct", cfg["sl_pct"]), "tp_pct": ov.get("tp_pct", cfg["tp_pct"]),
-            "lots": ov.get("lots"), "enabled": ov.get("enabled", True) is not False,
+            "lots": ov.get("lots"), "enabled": ov["enabled"] if isinstance(ov.get("enabled"), bool) else default_enabled(cfg, und),
             "max_per_day": int(ov.get("max_per_day") or default_cap), "product": product}
 
 

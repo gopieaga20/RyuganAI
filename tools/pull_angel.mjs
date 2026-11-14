@@ -1,5 +1,5 @@
 // Pull long 15-minute histories from Angel through the running backend and cache them for the backtests.
-// Usage: node tools/pull_angel.mjs [days=730] [interval=15m]
+// Usage: node tools/pull_angel.mjs [days=730] [interval=15m]   (days up to 1500; BASE and SYMS can be set in the environment)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,9 @@ const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '.cache');
 fs.mkdirSync(dir, { recursive: true });
 const BASE = process.env.BASE || 'http://127.0.0.1:8000';
 const days = +(process.argv[2] || 730), interval = process.argv[3] || '15m';
-const SYMS = ['^NSEI', '^NSEBANK', '^BSESN', 'RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'SBIN.NS', 'TATASTEEL.NS', 'AXISBANK.NS', 'ITC.NS', 'LT.NS', 'BHARTIARTL.NS', 'MARUTI.NS'];
+const BASE_SYMS = ['^NSEI', '^NSEBANK', '^BSESN', 'RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'SBIN.NS', 'TATASTEEL.NS', 'AXISBANK.NS', 'ITC.NS', 'LT.NS', 'BHARTIARTL.NS', 'MARUTI.NS'];
+// SYMS=A.NS,B.NS node tools/pull_angel.mjs 1500   pulls only those symbols
+const SYMS = process.env.SYMS ? process.env.SYMS.split(',') : BASE_SYMS;
 
 for (const sym of SYMS) {
   const file = path.join(dir, `ANGEL_${sym.replace(/[^A-Za-z0-9]/g, '_')}_${interval}_${days}d.json`);

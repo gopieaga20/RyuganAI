@@ -10,7 +10,7 @@ import { underlyingOf, sessionChange } from './scan-utils.js';
 
 export { underlyingOf, sessionChange };
 import { evaluate, combine } from './strategies.js';
-import { getDisabled } from './strategy-prefs.js';
+import { getDisabled, getCallRule } from './strategy-prefs.js';
 
 export const DEFAULT_UNIVERSE = ['NIFTY 50', 'BANK NIFTY', 'SENSEX', 'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS',
   'SBIN', 'TATASTEEL', 'AXISBANK', 'ITC', 'LT', 'BHARTIARTL', 'MARUTI'];
@@ -93,9 +93,9 @@ export const Scanner = (() => {
       ]);
       if (c15.length < 60) throw new Error(`only ${c15.length} candles of 15m data`);
       const nw = news && news.headlines?.length ? news.sentiment : null;
-      const off = getDisabled();
-      const r15 = evaluate(c15, { intraday: true, news: nw, disable: off });
-      const r5 = c5.length >= 60 ? evaluate(c5, { intraday: true, disable: off }) : null;
+      const off = getDisabled(), callRule = getCallRule();
+      const r15 = evaluate(c15, { intraday: true, news: nw, disable: off, callRule });
+      const r5 = c5.length >= 60 ? evaluate(c5, { intraday: true, disable: off, callRule }) : null;
       const fin = combine(r15, r5);
       const out = {
         sym: key, ok: true, price: c15[c15.length - 1].c, changePct: sessionChange(c15),

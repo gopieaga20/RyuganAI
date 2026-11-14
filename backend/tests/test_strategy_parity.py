@@ -45,8 +45,8 @@ SCENARIOS = {
 }
 
 
-def run_js(candles, ends, intraday, news, disable=None):
-    p = subprocess.run([NODE, DUMP], input=json.dumps({"candles": candles, "ends": ends, "intraday": intraday, "news": news, "disable": disable or []}),
+def run_js(candles, ends, intraday, news, disable=None, rule="score"):
+    p = subprocess.run([NODE, DUMP], input=json.dumps({"candles": candles, "ends": ends, "intraday": intraday, "news": news, "disable": disable or [], "rule": rule}),
                        capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr
     return json.loads(p.stdout)
@@ -292,4 +292,41 @@ def test_luxalgo_rules_on_a_hand_made_series():
     assert isinstance(r["events"], list) and len(r["votes"]) == 60
     assert all(o["top"] >= o["bottom"] for o in r["obs"])
     assert all(o["mitigatedAt"] is None or o["mitigatedAt"] >= o["formedAt"] for o in r["obs"])
+
+
+# ───────────── call rule "all": every switched-on strategy must agree ─────────────
+FOUR = ["trend", "rsi", "volume", "news", "sr"]          # switched off below: only structure, FVG, SMC and VWAP count
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("name", ["uptrend", "downtrend", "choppy_big"])
+def test_call_rule_all_gives_the_same_answer_in_python_and_javascript(name):
+    candles = make_candles(**SCENARIOS[name])
+    ends = list(range(60, len(candles), 3))
+    js = run_js(candles, ends, True, "BULLISH", FOUR, "all")
+    calls = set()
+    for row in js:
+        py = sv.evaluate(candles[: row["end"] + 1], intraday=True, news_label="BULLISH", disable=FOUR, rule="all")
+        where = f"{name} end={row['end']}"
+        assert (py["call"], py["confidence"], py["score"], py["maxScore"]) == (row["call"], row["confidence"], row["score"], row["maxScore"]), where
+        calls.add(py["call"])
+    assert "WAIT" in calls
+
+
+def test_call_rule_all_needs_every_weighted_strategy_to_agree():
+    c = make_candles(**SCENARIOS["uptrend"])
+    seen = set()
+    for e in range(60, len(c)):
+        r = sv.evaluate(c[: e + 1], intraday=True, disable=FOUR, rule="all")
+        voters = [v["vote"] for v in r["votes"] if v["weight"] > 0]
+        assert {v["id"] for v in r["votes"]} <= {"structure", "fvg", "smc", "vwap"}
+        if r["call"] == "BUY CE":
+            assert all(x == 1 for x in voters) and r["confidence"] == 95
+        elif r["call"] == "BUY PE":
+            assert all(x == -1 for x in voters) and r["confidence"] == 95
+        seen.add(r["call"])
+    assert "WAIT" in seen
+    # the weighted rule is looser: whatever the all-agree rule calls, the score rule calls too (same direction) when the score reaches 3
+    full = sv.evaluate(c, intraday=True, disable=FOUR, rule="score")
+    assert full["call"] in ("WAIT", "BUY CE", "BUY PE")
 

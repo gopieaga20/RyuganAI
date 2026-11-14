@@ -14,6 +14,7 @@ let settingsLoaded = false;
 const rupees = v => '₹' + Math.round(v).toLocaleString('en-IN');
 const clock = ms => new Date(ms).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
 const pct = v => Math.round(v * 100);
+const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 async function api(path, opts) {
   const res = await fetch(base() + path, { cache: 'no-store', ...opts });
@@ -57,7 +58,7 @@ export async function refreshAutoTrade() {
   const custom = Object.keys(st.symbols || {}).length;
   DOM.setText('at-rules', `Buys the ATM option when confidence ≥ ${st.min_confidence}% · max ${st.max_trades_per_day} new trades a day · max ${st.max_positions} open · one per stock · ` +
     `default stop −${pct(st.sl_pct)}% / target +${pct(st.tp_pct)}% of the premium · Nifty ${st.nifty_qty} units · ${custom ? `${custom} stock${custom > 1 ? 's' : ''} with their own settings · ` : ''}` +
-    `${st.max_same_direction ? `max ${st.max_same_direction} open the same way · ` : ''}${st.max_stops_per_day ? `pause after ${st.max_stops_per_day} stops a day · ` : ''}${st.nifty_agree ? 'stocks must agree with the Nifty · ' : ''}entries 10:15–14:30 IST`);
+    `${st.max_same_direction ? `max ${st.max_same_direction} open the same way · ` : ''}${st.max_stops_per_day ? `pause after ${st.max_stops_per_day} stops a day · ` : ''}${st.nifty_agree ? 'stocks must agree with the Nifty · ' : ''}entries ${hm(st.entry_from_min ?? 690)}–${hm(st.entry_to_min ?? 870)} IST${st.auto_stocks ? '' : ' · stocks: alerts only'}`);
   DOM.setText('at-today', `${s.orders_today} / ${st.max_trades_per_day}`);
   lastOrders = s.orders || [];
   renderScan(s.last_scan);
@@ -86,7 +87,7 @@ async function preview() {
     const d = await api('/api/autotrade/run?dry=true&as_if_open=true', { method: 'POST' });
     const rows = d.decisions.filter(r => r.call !== 'WAIT');
     out.innerHTML = rows.length
-      ? `<div class="muted small" style="margin-bottom:6px">Preview only, nothing was ordered. Shown as if it were 10:00 IST on a trading day.</div><table class="dtbl"><thead><tr><th>Symbol</th><th>Call</th><th>Conf</th><th>Result</th><th>Detail</th></tr></thead><tbody>` +
+      ? `<div class="muted small" style="margin-bottom:6px">Preview only, nothing was ordered. Shown as if it were 12:00 IST on a trading day.</div><table class="dtbl"><thead><tr><th>Symbol</th><th>Call</th><th>Conf</th><th>Result</th><th>Detail</th></tr></thead><tbody>` +
         rows.map(r => `<tr><td><b>${DOM.esc(r.symbol)}</b></td><td>${DOM.esc(r.call)}</td><td>${r.confidence}%</td><td>${actionChip(r.action)}</td><td class="at-detail">${DOM.esc(r.detail || '')}</td></tr>`).join('') + '</tbody></table>'
       : '<div class="muted">No BUY CE / BUY PE calls right now.</div>';
   } catch (e) { out.textContent = 'Preview failed: ' + e.message; }
@@ -131,6 +132,7 @@ function applySettingsView(d) {
   const s = d.settings;
   $('as-conf').value = s.min_confidence; $('as-maxpos').value = s.max_positions; $('as-maxday').value = s.max_trades_per_day;
   $('as-sl').value = pct(s.sl_pct); $('as-tp').value = pct(s.tp_pct); $('as-lots').value = s.lots;
+  $('as-auto-stocks').checked = !!s.auto_stocks;
   $('as-budget').value = s.premium_per_trade; $('as-cooldown').value = s.sl_cooldown_min;
   $('as-samedir').value = s.max_same_direction; $('as-stopsday').value = s.max_stops_per_day; $('as-niftyagree').checked = !!s.nifty_agree;
   $('as-nifty-day').value = s.nifty_max_per_day; $('as-stock-day').value = s.stock_max_per_day; $('as-product').value = s.product;
@@ -172,7 +174,7 @@ async function saveSettings() {
     const d = await post('/api/autotrade/settings', {
       min_confidence: Math.round(num('as-conf', 85)), max_positions: Math.round(num('as-maxpos', 5)), max_trades_per_day: Math.round(num('as-maxday', 5)),
       sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_same_direction: Math.max(0, Math.round(num('as-samedir', 2))), max_stops_per_day: Math.max(0, Math.round(num('as-stopsday', 2))),
-      premium_per_trade: Math.max(0, Math.round(num('as-budget', 15000))), sl_cooldown_min: Math.max(0, Math.round(num('as-cooldown', 60))),
+      auto_stocks: $('as-auto-stocks').checked, premium_per_trade: Math.max(0, Math.round(num('as-budget', 15000))), sl_cooldown_min: Math.max(0, Math.round(num('as-cooldown', 60))),
       nifty_agree: $('as-niftyagree').checked, nifty_max_per_day: g.nifty, stock_max_per_day: g.stock, product: g.product,
       universe: settingsRows.map(r => r.symbol), symbols,
     });
@@ -188,7 +190,7 @@ async function resetSettings() {
   try {
     applySettingsView(await post('/api/autotrade/settings', {
       min_confidence: 85, max_positions: 5, max_trades_per_day: 5, sl_pct: 0.3, tp_pct: 0.3, lots: 1, nifty_max_per_day: 3, stock_max_per_day: 1,
-      premium_per_trade: 15000, sl_cooldown_min: 60,
+      premium_per_trade: 15000, sl_cooldown_min: 60, auto_stocks: false,
       product: 'INTRADAY', max_same_direction: 2, max_stops_per_day: 2, nifty_agree: true, symbols: {}, universe: settingsRows.map(r => r.symbol),
     }));
     $('as-msg').style.color = 'var(--green)'; $('as-msg').textContent = 'Reset to defaults.';
@@ -203,8 +205,9 @@ function addSymbol() {
   readRows();
   const g = { sl: num('as-sl', 30) / 100, tp: num('as-tp', 30) / 100, lots: Math.max(1, Math.round(num('as-lots', 1))) };
   const day = Math.max(1, Math.round(num('as-stock-day', 1))), product = $('as-product').value;
+  const on = /^(NIFTY( 50)?|BANK ?NIFTY)$/.test(sym) || $('as-auto-stocks').checked;       // same default as the server: indices trade, stocks only with "Auto-trade stocks"
   settingsRows.push({ symbol: sym, underlying: sym.replace(/\s+/g, ''), lot_size: null, tradable: true,
-    default: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_per_day: day, product }, value: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, enabled: true, max_per_day: day, product } });
+    default: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_per_day: day, product, enabled: on }, value: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, enabled: on, max_per_day: day, product } });
   input.value = ''; renderSettingsRows();
   $('as-msg').style.color = 'var(--text3)'; $('as-msg').textContent = `${sym} added. Press Save to apply.`;
 }

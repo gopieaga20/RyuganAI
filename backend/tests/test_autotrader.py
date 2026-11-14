@@ -13,7 +13,8 @@ import autotrader as at
 IST = at.IST
 MON_10AM = dt.datetime(2026, 11, 2, 10, 30, tzinfo=IST)        # a Monday
 SAT_10AM = dt.datetime(2026, 11, 7, 10, 0, tzinfo=IST)
-CFG = {**at.DEFAULTS, "enabled": True, "universe": ["NIFTY 50", "RELIANCE", "TCS"]}
+# the older tests trade stocks from 10:15; the defaults changed on 14 Nov 2026 (indices only, entries from 11:30) and have their own tests at the end
+CFG = {**at.DEFAULTS, "enabled": True, "universe": ["NIFTY 50", "RELIANCE", "TCS"], "auto_stocks": True, "entry_from_min": 10 * 60 + 15}
 NO_PORTFOLIO_RULES = {"max_same_direction": 0, "max_stops_per_day": 0, "nifty_agree": False}      # for tests of the OTHER limits
 
 
@@ -460,7 +461,7 @@ def test_a_stock_call_must_agree_with_the_nifty():
 
 
 def test_entries_start_at_10_15():
-    assert at.DEFAULTS["entry_from_min"] == 10 * 60 + 15
+    assert at.DEFAULTS["entry_from_min"] == 11 * 60 + 30          # the default; these older tests run with CFG, which starts at 10:15
     assert not at.decide(call(), CFG, [], dt.datetime(2026, 11, 2, 10, 14, tzinfo=IST))[0]
     assert at.decide(call(), CFG, [], dt.datetime(2026, 11, 2, 10, 15, tzinfo=IST))[0]
 
@@ -490,12 +491,27 @@ def test_the_new_settings_are_saved_and_have_safe_defaults():
 
 def test_built_in_defaults_from_the_reversal_study():
     assert at.symbol_params(CFG, "NIFTY")["product"] == "INTRADAY"          # overnight gaps cost more than carrying earned
-    for und in ("BANKNIFTY", "HDFCBANK", "ICICIBANK", "SBIN"):
-        assert at.symbol_params(CFG, und)["enabled"] is False
-    assert at.symbol_params(CFG, "TCS")["enabled"] is True
-    # the user can switch a bank stock back on, and that choice is kept
-    on = {**CFG, "symbols": at.clean_symbols({"SBIN": {"enabled": True}})}
+    base = {**at.DEFAULTS, "enabled": True}
+    for und in ("NIFTY", "BANKNIFTY"):
+        assert at.symbol_params(base, und)["enabled"] is True          # the indices trade automatically
+    for und in ("HDFCBANK", "SBIN", "TCS", "RELIANCE"):
+        assert at.symbol_params(base, und)["enabled"] is False         # stocks are alert-only by default
+    assert at.symbol_params({**base, "auto_stocks": True}, "TCS")["enabled"] is True
+    # a per-stock choice always wins, both ways
+    on = {**base, "symbols": at.clean_symbols({"SBIN": {"enabled": True}, "BANKNIFTY": {"enabled": False}})}
     assert at.symbol_params(on, "SBIN")["enabled"] is True and at.symbol_params(on, "HDFCBANK")["enabled"] is False
+    assert at.symbol_params(on, "BANKNIFTY")["enabled"] is False
+    off = {**base, "auto_stocks": True, "symbols": at.clean_symbols({"TCS": {"enabled": False}})}
+    assert at.symbol_params(off, "TCS")["enabled"] is False and at.symbol_params(off, "ITC")["enabled"] is True
+
+
+def test_the_default_entry_window_starts_at_11_30_and_a_stock_call_is_refused_with_the_reason():
+    d = {**at.DEFAULTS, "enabled": True}
+    assert not at.decide(call("NIFTY 50", price=23100.0), d, [], dt.datetime(2026, 11, 2, 11, 29, tzinfo=IST))[0]
+    assert at.decide(call("NIFTY 50", price=23100.0), d, [], dt.datetime(2026, 11, 2, 11, 30, tzinfo=IST))[0]
+    ok, why = at.decide(call("TCS"), d, [], dt.datetime(2026, 11, 2, 12, 0, tzinfo=IST))
+    assert not ok and "switched off for TCS" in why and "alert-only" in why
+    assert at.decide(call("TCS"), {**d, "auto_stocks": True, "nifty_agree": False}, [], dt.datetime(2026, 11, 2, 12, 0, tzinfo=IST))[0]
 
 
 def test_every_call_goes_to_the_outcome_log_traded_or_not_but_a_dry_run_logs_nothing(patch_scan):
@@ -593,3 +609,18 @@ def test_strategies_switched_off_are_left_out_of_the_scan_and_news_is_not_fetche
     deps.disabled_strategies = None
     run(at.scan_symbol("TCS", deps))
     assert fetched == ["TCS"]
+
+
+def test_the_nifty_agreement_rule_works_with_a_single_strategy(patch_scan):
+    # VWAP alone has a maximum score of 1: "agrees" must then mean the same side, not 2 points that can never be reached
+    nifty = {**call("NIFTY 50", "BUY CE", 95, 23100.0), "score": 1, "maxScore": 1}
+    tcs_ce = {**call("TCS", "BUY CE", 95), "score": 1, "maxScore": 1}
+    tcs_pe = {**call("TCS", "BUY PE", 95), "score": -1, "maxScore": 1}
+    cfg = {**CFG, "universe": ["NIFTY 50", "TCS"], "auto_stocks": True, "max_same_direction": 5}
+    patch_scan({"NIFTY 50": nifty, "TCS": tcs_ce})
+    out = {r["symbol"]: r for r in run(at.run_cycle(MemStore(), cfg, make_deps(lots={"NIFTY": 65}), now=MON_10AM))}
+    assert out["TCS"]["action"] == "ORDER"
+    patch_scan({"NIFTY 50": nifty, "TCS": tcs_pe})
+    out = {r["symbol"]: r for r in run(at.run_cycle(MemStore(), cfg, make_deps(lots={"NIFTY": 65}), now=MON_10AM))}
+    assert out["TCS"]["action"] == "SKIP" and "Nifty's own signal" in out["TCS"]["detail"]
+

@@ -3,9 +3,9 @@
 import fs from 'node:fs';
 import { evaluate } from '../js/strategies.js';
 
-const { candles, ends, intraday, news, disable } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { candles, ends, intraday, news, disable, rule } = JSON.parse(fs.readFileSync(0, 'utf8'));
 const out = ends.map(e => {
-  const r = evaluate(candles.slice(0, e + 1), { intraday, news: news ? { label: news } : null, disable: disable || [] });
+  const r = evaluate(candles.slice(0, e + 1), { intraday, news: news ? { label: news } : null, disable: disable || [], callRule: rule || 'score' });
   return { end: e, call: r.call, confidence: r.confidence, score: r.score, maxScore: r.maxScore, adx: r.adx, atr: r.atr, rsi: r.rsi,
     votes: r.votes.map(v => ({ id: v.id, vote: v.vote, weight: v.weight })) };
 });
