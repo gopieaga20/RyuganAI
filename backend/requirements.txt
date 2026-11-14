@@ -11,6 +11,7 @@ pyotp>=2.9.0
 pandas>=2.0.0
 # login + stored API keys
 cryptography>=42.0.0
+yfinance>=0.2.54            # Yahoo statements for the screener's fundamentals (unofficial; see screener_fund.py)
 
 # Dev/test only
 pytest>=8.0.0

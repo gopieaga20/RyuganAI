@@ -2,6 +2,7 @@
 
 import { requireLogin } from './auth.js';          // first: installs the fetch wrapper that carries the session before any other module fetches
 import { initProfile } from './profile.js';
+import { initScreener, refreshScreener } from './screener.js';
 import { isLiveAllowed, prefsLoaded } from './strategy-prefs.js';
 import { DOM } from './dom-utils.js';
 import { State } from './state.js';
@@ -90,6 +91,7 @@ export function switchTab(t, { fromRoute = false } = {}) {
   if (t === 'paper') { refreshPaperTrading(); refreshAutoTrade(); }
   if (t === 'nifty') fetchGlobalCues();
   if (t === 'live') refreshLive();
+  if (t === 'screener') refreshScreener();
 }
 
 const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
@@ -115,6 +117,7 @@ window.addEventListener('load', async () => {
   initDash();
   initAutoTrade();
   initLive();
+  initScreener();
   initTiles(); initTilt();
   // open the page named in the address (a refresh or a pasted link); an unknown or empty address means the Dashboard
   const first = parseRoute(location.hash);

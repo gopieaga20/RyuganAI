@@ -86,13 +86,13 @@ export function renderPTPositions() {
   tb.innerHTML = State.ptPositions.map(p => {
     const color = p.type === 'LONG' ? 'var(--green)' : 'var(--down)';
     return `<tr id="pt-row-${p.id}">
-      <td style="font-weight:600">${DOM.esc(p.symbol)}${p.source === 'auto' ? ' <span class="auto-badge">AUTO</span>' : ''}</td>
+      <td style="font-weight:600">${DOM.esc(p.symbol)}${p.source === 'auto' ? ' <span class="auto-badge">AUTO</span>' : ''}${p.source === 'delivery' ? ` <span class="auto-badge" title="Multi-day delivery trade from the Screener">DELIVERY${p.stage === 'T1_DONE' ? ' · half sold' : p.stage === 'TRAIL' ? ' · trailing' : ''}</span>` : ''}</td>
       <td style="color:${color};font-weight:600">${DOM.esc(p.type)}</td>
       <td>${p.qty}</td>
       <td style="font-family:var(--font-mono)">${p.entry_price.toFixed(2)}</td>
       <td style="font-family:var(--font-mono)" id="pt-ltp-${p.id}">--</td>
       <td style="color:var(--down);font-family:var(--font-mono)">${p.sl.toFixed(2)}</td>
-      <td style="color:var(--green);font-family:var(--font-mono)">${p.tp.toFixed(2)}</td>
+      <td style="color:var(--green);font-family:var(--font-mono)">${p.tp.toFixed(2)}${p.source === 'delivery' && p.t1 != null ? `<div class="sc-s">T1 ${(+p.t1).toFixed(2)}</div>` : ''}</td>
       <td style="font-weight:600;font-family:var(--font-mono)" id="pt-pnl-${p.id}">--</td>
       <td>
         <button class="btn btn-sm btn-ghost" onclick="ptModifyPosition(${p.id}, ${p.sl.toFixed(2)}, ${p.tp.toFixed(2)})" style="margin-right:4px">Modify</button>

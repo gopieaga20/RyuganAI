@@ -158,6 +158,9 @@
         <button class="nav-btn nav-btn-live" onclick="switchTab('live')" data-tab="live" hidden style="display:none">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span><span class="nav-label">Live</span>
         </button>
+        <button class="nav-btn" onclick="switchTab('screener')" data-tab="screener">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg></span><span class="nav-label">Screener</span>
+        </button>
         <button class="nav-btn nav-btn-special" onclick="switchTab('paper')" data-tab="paper">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span class="nav-label">Paper</span>
         </button>
@@ -959,6 +962,69 @@
         </div>
       </section>
 
+      <!-- ══════ TAB: SCREENER ══════ -->
+      <section class="tab-pane" id="tab-screener">
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-title">Techno-Funda Screener <span class="pill">F&amp;O stocks · end of day</span></div>
+          <div class="sc-s" style="line-height:1.5">Fundamentals choose <b>what</b> to trade (quality and growth, from Yahoo Finance), technicals choose <b>when</b> (trend, relative strength, breakout volume and delivery). Runs nightly at 18:30 IST.
+            <b>Read this first:</b> the technical rules alone were backtested on 4 years of daily data and showed no edge that can be told apart from chance (average +0.09 R per trade, about 17% likely to be luck). The fundamental rules cannot be backtested (no history exists), and promoter pledge, bank NPA and capital adequacy have no free data source, so they are not scored. Treat a high score as a shortlist to study, not a signal to follow.</div>
+        </div>
+        <div class="stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px">
+          <div class="stat-card"><div class="sc-l">Screened</div><div class="sc-v" id="scr-s-uni">--</div></div>
+          <div class="stat-card"><div class="sc-l">Pass hygiene</div><div class="sc-v" id="scr-s-hyg">--</div></div>
+          <div class="stat-card"><div class="sc-l">With fundamentals</div><div class="sc-v" id="scr-s-fund">--</div></div>
+          <div class="stat-card"><div class="sc-l">Technical gate</div><div class="sc-v" id="scr-s-tech">--</div></div>
+          <div class="stat-card"><div class="sc-l">In the feed</div><div class="sc-v" id="scr-s-feed">--</div></div>
+          <div class="stat-card"><div class="sc-l">Last run</div><div class="sc-v" id="scr-s-when" style="font-size:13px">--</div></div>
+        </div>
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" id="scr-run">Run now</button>
+            <button class="btn btn-ghost btn-sm" id="scr-fund">Refresh fundamentals</button>
+            <span class="sc-s" id="scr-progress"></span><span class="sc-s" id="scr-msg"></span>
+          </div>
+          <div class="sc-s" id="scr-flags" style="margin-top:6px"></div>
+        </div>
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px" id="scr-tabs">
+            <button class="btn btn-ghost btn-sm active" data-view="feed">Feed</button>
+            <button class="btn btn-ghost btn-sm" data-view="setups">With setups</button>
+            <button class="btn btn-ghost btn-sm" data-view="all">All screened</button>
+            <input id="scr-q" class="inp" placeholder="Search symbol or industry" style="max-width:200px">
+            <label class="sc-s"><input type="checkbox" id="scr-hyg" checked> hide stocks failing hygiene</label>
+          </div>
+          <div class="tbl-wrap">
+            <table class="dtbl" id="scr-table">
+              <thead><tr>
+                <th data-sort="symbol">Stock</th><th data-sort="score">Score</th><th data-sort="rs">RS</th><th data-sort="close">Close</th><th>Setup</th>
+                <th data-sort="entry">Entry</th><th data-sort="stop">Stop</th><th data-sort="t1">T1</th><th data-sort="t2">T2</th><th data-sort="rr">R:R</th><th data-sort="qty">Qty</th><th></th>
+              </tr></thead>
+              <tbody id="scr-body"><tr><td colspan="12" class="empty-cell">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card" id="scr-settings">
+          <div class="card-title">Screener settings</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+            <label class="sc-s">Feed score at least<input class="inp" type="number" data-k="min_score" min="0" max="100"></label>
+            <label class="sc-s">Risk per setup (% of capital)<input class="inp" type="number" step="0.1" data-k="risk_pct"></label>
+            <label class="sc-s">Max % of capital in one stock<input class="inp" type="number" data-k="max_pct_per_position"></label>
+            <label class="sc-s">Min average turnover (₹ crore)<input class="inp" type="number" data-k="min_turnover_cr"></label>
+            <label class="sc-s">Min market cap (₹ crore)<input class="inp" type="number" data-k="min_mcap_cr"></label>
+            <label class="sc-s">Re-fetch fundamentals after (days)<input class="inp" type="number" data-k="fundamentals_max_age_days"></label>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:12px">
+            <label class="sc-s"><input type="checkbox" data-k="auto_delivery"> Paper-trade the top setups by itself each night (delivery, off by default)</label>
+            <label class="sc-s">Max delivery positions at once<input class="inp" type="number" data-k="max_delivery_positions" min="1" max="20"></label>
+            <label class="sc-s"><input type="checkbox" data-k="intraday_feed"> Feed the intraday scan list each night: Nifty 50, Bank Nifty and the top screened stocks (replaces the list; your own is saved)</label>
+            <label class="sc-s">Screened stocks to add<input class="inp" type="number" data-k="intraday_feed_size" min="1" max="40"></label>
+          </div>
+          <div class="sc-s" style="margin-top:6px">Screened stocks on the intraday list give calls and alerts; the auto-trader still trades only Nifty 50 and Bank Nifty unless "Auto-trade stocks" is on.</div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" id="scr-save">Save settings</button>
+            <button class="btn btn-ghost btn-sm" id="scr-restore" title="Put back the scan list you had before the screener replaced it">Restore my scan list</button></div>
+        </div>
+      </section>
+
       <!-- ══════ TAB: TRADE LOG ══════ -->
       <section class="tab-pane" id="tab-tradelog">
         <div class="card">
@@ -1383,6 +1449,7 @@
               <label class="nf-check"><input type="checkbox" id="nf-positions"> Open positions: in a loss, or close to the stop-loss / target</label>
               <label class="nf-check nf-sub">Loss alert from <input id="nf-loss" type="number" min="1" max="90" step="1" style="width:64px"> % below entry, then every further 10%</label>
               <label class="nf-check nf-sub">"Close to" means <input id="nf-near" type="number" min="50" max="99" step="1" style="width:64px"> % of the way to the stop or target</label>
+              <label class="nf-check"><input type="checkbox" id="nf-screener"> Nightly Screener summary (stocks at the feed score, with their setups)</label>
               <label class="nf-check"><input type="checkbox" id="nf-calls"> Calls at or above <input id="nf-conf" type="number" min="1" max="100" step="1" style="width:64px"> % confidence</label>
               <div class="at-set-actions">
                 <button type="button" class="btn btn-primary btn-sm" id="nf-save">Save alerts</button>

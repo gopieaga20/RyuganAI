@@ -56,6 +56,8 @@ import notify
 import outcomes
 import auth
 import account
+import screener
+import delivery
 import crypto
 import ai_providers
 
@@ -95,9 +97,10 @@ async def lifespan(app: FastAPI):
     watcher_task = asyncio.create_task(_sl_tp_watcher(pool))
     auto_task = asyncio.create_task(_autotrade_loop(pool))
     exit_task = asyncio.create_task(_live_exit_loop(pool))
+    screener_task = asyncio.create_task(screener.screener_loop(pool))
     yield
     master_task.cancel()
-    for task in (watcher_task, auto_task, exit_task):
+    for task in (watcher_task, auto_task, exit_task, screener_task):
         task.cancel()
         try:
             await task
@@ -239,10 +242,10 @@ PAPER_LEVERAGE = max(1.0, float(os.getenv("PAPER_LEVERAGE", "5")))
 CHARGE_PER_LEG = 20.0          # flat brokerage per order leg (entry and exit)
 
 
-def required_margin(symbol: str, pos_type: str, qty: int, price: float) -> float:
-    """Margin blocked for a position. Long option buyers pay the whole premium; others get leverage."""
+def required_margin(symbol: str, pos_type: str, qty: int, price: float, product: str = "MIS") -> float:
+    """Margin blocked for a position. Long option buyers pay the whole premium and delivery (CNC) is paid in full; others get leverage."""
     notional = compute_margin(qty, price)
-    if pos_type == "LONG" and _OPTION_SYMBOL_RE.match(symbol.upper()):
+    if product == "CNC" or (pos_type == "LONG" and _OPTION_SYMBOL_RE.match(symbol.upper())):
         return notional
     return round(notional / PAPER_LEVERAGE, 2)
 
@@ -319,15 +322,38 @@ async def _close_position(pool: asyncpg.Pool, position_id: int, exit_price: floa
                 margin_release, pnl - CHARGE_PER_LEG, pnl - CHARGE_PER_LEG
             )
             # Brokerage is ₹20 per leg: the entry leg was taken when the position opened, this is the exit leg.
-            charges = CHARGE_PER_LEG * 2
+            # A delivery position that already sold half at T1 had its entry leg shown on that first history row.
+            charges = CHARGE_PER_LEG if pos["stage"] in ("T1_DONE", "TRAIL") else CHARGE_PER_LEG * 2
             await conn.execute(
                 """INSERT INTO history
-                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source, entry_time)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                   (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source, entry_time, product)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
                 pos["symbol"], pos["type"], pos["qty"],
-                pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"], pos["entry_time"]
+                pos["entry_price"], exit_price, pnl, charges, reason, now, pos["source"], pos["entry_time"], pos["product"]
             )
     await outcomes.track_premium(pool, position_id, exit_price, closed_at=time.time())
+    return pnl
+
+
+async def _partial_close_position(pool: asyncpg.Pool, position_id: int, sell_qty: int, exit_price: float, reason: str) -> Optional[float]:
+    """Sell `sell_qty` of an open delivery position (T1): release that share of the margin, book its PnL, record a history row, keep the rest open with the stop
+    moved to the entry price (breakeven) and stage T1_DONE. Returns the gross PnL of the part sold, or None if the position is gone or the quantity does not fit."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            pos = await conn.fetchrow("SELECT * FROM positions WHERE id = $1 FOR UPDATE", position_id)
+            if not pos or not (0 < sell_qty < int(pos["qty"])):
+                return None
+            qty = int(pos["qty"])
+            margin_part = round(float(pos["margin"]) * sell_qty / qty, 2) if pos["margin"] is not None else compute_margin(sell_qty, float(pos["entry_price"]))
+            pnl = compute_pnl(pos["type"], float(pos["entry_price"]), exit_price, sell_qty)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            await conn.execute("UPDATE portfolio SET used_margin = used_margin - $1, capital = capital + $2, total_pnl = total_pnl + $3 WHERE id = 1",
+                               margin_part, pnl - CHARGE_PER_LEG, pnl - CHARGE_PER_LEG)
+            await conn.execute("UPDATE positions SET qty = qty - $1, margin = margin - $2, sl = entry_price, stage = 'T1_DONE' WHERE id = $3", sell_qty, margin_part, position_id)
+            await conn.execute(
+                """INSERT INTO history (symbol, type, qty, entry_price, exit_price, pnl, charges, reason, exit_time, source, entry_time, product)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
+                pos["symbol"], pos["type"], sell_qty, pos["entry_price"], exit_price, pnl, CHARGE_PER_LEG * 2, reason, now, pos["source"], pos["entry_time"], pos["product"])
     return pnl
 
 
@@ -406,6 +432,18 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                 ltp = await _fetch_ltp(pos["price_symbol"] or pos["symbol"])
                 if ltp is None:
                     continue
+                if pos["source"] == delivery.SOURCE:
+                    act = delivery.next_action(pos["stage"], ltp, float(pos["entry_price"]), float(pos["sl"]),
+                                               float(pos["t1"]) if pos["t1"] is not None else None, float(pos["tp"]), int(pos["qty"]))
+                    if act and act[0] == "PARTIAL":
+                        pnl = await _partial_close_position(pool, pos["id"], act[1], ltp, "Target 1 Hit (half sold, stop to breakeven)")
+                        if pnl is not None:
+                            await notify.notify(pool, "paper", notify.paper_close(pos["symbol"], "Target 1 Hit: half sold, stop moved to entry", ltp, pnl), key=f"paperpart:{pos['id']}")
+                    elif act:
+                        pnl = await _close_position(pool, pos["id"], ltp, act[1])
+                        if pnl is not None:
+                            await notify.notify(pool, "paper", notify.paper_close(pos["symbol"], act[1], ltp, pnl), key=f"paperclose:{pos['id']}")
+                    continue                                   # delivery trades follow their own lifecycle: no intraday alerts or square-off
                 if pos["source"] == "auto":
                     await outcomes.track_premium(pool, pos["id"], ltp)           # real premium path for the outcome log
                 reason = sl_tp_breached(pos["type"], ltp, float(pos["sl"]), float(pos["tp"]))
@@ -418,6 +456,7 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
                     pnl = await _close_position(pool, pos["id"], ltp, reason)
                     if pnl is not None:
                         await notify.notify(pool, "paper", notify.paper_close(pos["symbol"], reason, ltp, pnl), key=f"paperclose:{pos['id']}")
+            await delivery.expire_orders(pool, autotrader.now_ist())
             await _fill_pending_orders(pool)
             if _angel_broker:
                 _angel_broker.refresh_master_if_stale()
@@ -433,10 +472,10 @@ async def _sl_tp_watcher(pool: asyncpg.Pool):
         await asyncio.sleep(_SL_TP_POLL_SECONDS)
 
 
-async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type, product, price_symbol, source='manual') -> tuple:
+async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type, product, price_symbol, source='manual', t1=None, setup=None) -> tuple:
     """Block margin, take the entry charge and insert the position. Caller holds a transaction.
     Returns (position id, margin). Raises HTTPException(400) if funds are short."""
-    margin = required_margin(symbol, pos_type, qty, price)
+    margin = required_margin(symbol, pos_type, qty, price, product)
     port = await conn.fetchrow("SELECT * FROM portfolio WHERE id = 1 FOR UPDATE")
     available = float(port["capital"]) - float(port["used_margin"])
     if available < margin + CHARGE_PER_LEG:
@@ -450,10 +489,10 @@ async def _open_position(conn, symbol, pos_type, qty, price, sl, tp, order_type,
         margin, CHARGE_PER_LEG
     )
     row = await conn.fetchrow(
-        """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol, order_type, product, margin, source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id""",
+        """INSERT INTO positions (symbol, type, qty, entry_price, sl, tp, entry_time, price_symbol, order_type, product, margin, source, t1, stage, setup)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id""",
         symbol, pos_type, qty, price, sl, tp, datetime.datetime.now(datetime.timezone.utc),
-        price_symbol, order_type, product, margin, source
+        price_symbol, order_type, product, margin, source, t1, "OPEN" if source == delivery.SOURCE else None, setup
     )
     return row["id"], margin
 
@@ -477,7 +516,8 @@ async def _fill_pending_orders(pool: asyncpg.Pool):
                         print(f"[WARN] Pending order #{o['id']} cancelled at fill: {problem}")
                         continue
                     await _open_position(conn, o["symbol"], o["type"], int(o["qty"]), ltp,
-                                         float(o["sl"]), float(o["tp"]), o["order_type"], o["product"], o["price_symbol"])
+                                         float(o["sl"]), float(o["tp"]), o["order_type"], o["product"], o["price_symbol"],
+                                         source=o["source"], t1=o["t1"], setup=o["setup"])
         except HTTPException as e:
             print(f"[WARN] Pending order #{o['id']} dropped: {e.detail}")   # the failed transaction rolled the delete back; drop the order for good
             async with pool.acquire() as conn:
@@ -616,6 +656,8 @@ async def _ensure_schema(pool: asyncpg.Pool):
         """)
         await outcomes.ensure_schema(conn)
         await auth.ensure_schema(conn)
+        await screener.ensure_schema(conn)
+        await delivery.ensure_schema(conn)
         await conn.execute("ALTER TABLE live_orders ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         await conn.execute("ALTER TABLE live_exits ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'angel'")
         # Safe migration: add new columns if they don't exist on old tables
@@ -670,6 +712,7 @@ async def require_login(request: Request, call_next):
 
 
 app.include_router(account.router)
+app.include_router(screener.router)
 account.hooks["live_off"] = lambda: _live_state.update(enabled=False, enabled_at=None)
 
 app.add_middleware(

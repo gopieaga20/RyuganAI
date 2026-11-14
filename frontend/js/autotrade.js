@@ -213,7 +213,7 @@ function addSymbol() {
 }
 
 /* ───────────── Telegram alerts ───────────── */
-const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'positions', 'calls'];
+const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'positions', 'calls', 'screener'];
 
 async function loadAlerts() {
   try {
