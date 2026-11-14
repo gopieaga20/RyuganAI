@@ -65,6 +65,10 @@ const U = files.map(f => {
 });
 
 const CORE = ['trend', 'rsi', 'vwap', 'structure', 'fvg', 'volume'];
+// LAST_DAYS=100 limits the signals to the last 100 calendar days of the data; ONLY=A_NS,B_NS keeps just those symbols
+if (process.env.ONLY) { const keep = new Set(process.env.ONLY.split(',')); const kept = U.filter(u => keep.has(u.sym)); U.splice(0, U.length, ...kept); }
+const LAST_DAYS = +process.env.LAST_DAYS || 0;
+const WINDOW_START = LAST_DAYS ? Math.max(...U.map(u => u.candles[u.candles.length - 1].ts)) - LAST_DAYS * 86400000 : 0;
 const W = { trend: 2, rsi: 1, vwap: 1, structure: 2, fvg: 1, volume: 1, smc: 2 };
 /** Signed vote (+1/-1/0) of one strategy at bar i of symbol u. */
 function vote(u, i, id) {
@@ -127,7 +131,8 @@ function candidates(def) {
   const out = [];
   for (const u of U) {
     if (def.exclude && def.exclude.includes(u.sym)) continue;
-    for (let i = 60; i < u.candles.length - 1; i++) {
+    if (def.only && u.sym !== def.only) continue;
+    for (let i = Math.max(60, WINDOW_START ? u.candles.findIndex(c => c.ts >= WINDOW_START) : 60); i < u.candles.length - 1; i++) {
       const r = u.pre[i]; if (!r || r.adx < 20) continue;
       const m = u.meta[i];
       if (m.min < (def.from ?? 10 * 60 + 15) || m.min > (def.to ?? 14 * 60 + 30) || u.meta[i + 1].day !== m.day) continue;
@@ -189,7 +194,7 @@ function rawEdge(cands) {
 
 // cut between "first 60%" and "last 40%" of the whole period, the same for every strategy
 const allTs = U.flatMap(u => [u.candles[60].ts, u.candles[u.candles.length - 1].ts]);
-const T0 = Math.min(...allTs), T1 = Math.max(...allTs), CUT = T0 + (T1 - T0) * 0.6;
+const T0 = WINDOW_START || Math.min(...allTs), T1 = Math.max(...allTs), CUT = T0 + (T1 - T0) * (+process.env.CUTFRAC || 0.6);
 
 function evaluateDef(def) {
   const cands = candidates(def);
@@ -202,6 +207,205 @@ function evaluateDef(def) {
 
 
 
+
+
+
+// ───────────── the volume-confirmed combinations found on the last 100 days, on the long data: MAXPOS=99 DATA=1500d node tools/bt_strategies.mjs volume-combos ─────────────
+if (process.argv[2] === 'volume-combos') {
+  const NLc = String.fromCharCode(10), f0c = x => String(Math.round(x));
+  const vols = U.map(u => {
+    const byDay = new Map(); u.candles.forEach((c, i) => byDay.set(u.meta[i].day, c.c));
+    const cl = [...byDay.values()], r = []; for (let k = 1; k < cl.length; k++) r.push(Math.log(cl[k] / cl[k - 1]));
+    const m = r.reduce((a, b) => a + b, 0) / r.length; return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / (r.length - 1));
+  });
+  const sv = U.map((u, i) => (u.isIndex ? null : vols[i])).filter(x => x).sort((a, b) => a - b), med = sv[Math.floor(sv.length / 2)];
+  U.forEach((u, i) => { u.volRatio = Math.min(2.5, Math.max(0.5, vols[i] / med)); });
+  const L = { trend: 'EMA trend', vwap: 'VWAP', volume: 'Volume push', structure: 'Structure', rsi: 'RSI', sr: 'Support/resistance' };
+  const mk = (id, ids, extra = {}) => ({ id, name: ids.map(x => L[x]).join(' + ') + (extra.from ? ', entries from 11:30' : ''), def: { mode: 'all', ids, ...extra } });
+  const defs = [
+    mk('tv', ['trend', 'volume']), mk('tvv', ['trend', 'vwap', 'volume']), mk('tsv', ['trend', 'structure', 'volume']), mk('trv', ['trend', 'rsi', 'volume']),
+    mk('tvs', ['trend', 'volume', 'sr']), mk('vvs', ['vwap', 'volume', 'sr']), mk('vv', ['vwap', 'volume']), mk('v', ['volume']),
+    mk('tv-late', ['trend', 'volume'], { from: 11 * 60 + 30 }), mk('tvv-late', ['trend', 'vwap', 'volume'], { from: 11 * 60 + 30 }),
+    { ...mk('vwap', ['vwap']), name: 'VWAP alone (the current default)' }, mk('trend', ['trend']), { id: 'random', name: 'Random direction (yardstick)', def: { mode: 'all', ids: ['random'] } },
+  ];
+  const SCEN = [['sd_vol', 'No spread'], ['sd_vol_sp1', '1% round-trip spread'], ['sd_vol_sp2', '2% round-trip spread']];
+  let sd1 = 2718; const rr = () => { sd1 = (Math.imul(sd1, 1664525) + 1013904223) >>> 0; return sd1 / 4294967296; };
+  const erf = z => { const t = 1 / (1 + 0.3275911 * Math.abs(z)), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z); return z >= 0 ? y : -y; };
+  const control = (base, P, actual, n) => {
+    if (n < 100) return { ctrl: NaN, p: 1 };
+    const nets = [];
+    for (let k = 0; k < 6; k++) for (const t of simulate(base.map(c => ({ ...c, dir: rr() < 0.5 ? -c.dir : c.dir })), P)) nets.push(t.net);
+    const m = nets.reduce((a, b) => a + b, 0) / nets.length, sd = Math.sqrt(nets.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, nets.length - 1));
+    return { ctrl: m, p: 0.5 * (1 - erf((actual - m) / (sd / Math.sqrt(n)) / Math.SQRT2)) };
+  };
+  const quarter = ts => { const d = new Date(ts + 19800000); return d.getUTCFullYear() + 'Q' + (Math.floor(d.getUTCMonth() / 3) + 1); };
+  const mean = a => (a.length ? a.reduce((x, t) => x + t.net, 0) / a.length : 0);
+  const K = defs.length;
+  const rows = defs.map(d => {
+    const base = candidates(d.def), out = { ...d, signals: base.length, raw: rawEdge(base), res: {} };
+    for (const [m] of SCEN) {
+      const tr = simulate(base, MODELS[m]), st = stats(tr, CUT), c = control(base, MODELS[m], st.avg, st.n);
+      const byQ = new Map(); tr.forEach(t => byQ.set(quarter(t.ts), (byQ.get(quarter(t.ts)) || 0) + t.net));
+      out.res[m] = { tr, st, ...c, adj: Math.min(1, c.p * K), qPos: [...byQ.values()].filter(v => v > 0).length, qN: byQ.size };
+    }
+    return out;
+  });
+  const T = [];
+  T.push('# Volume-confirmed combinations on 4 years of data' + NLc);
+  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `MAXPOS=' + MAXPOS + ' DATA=' + SUF + ' node tools/bt_strategies.mjs volume-combos`. ' + U.length + ' symbols, ' + new Date(T0).toISOString().slice(0, 10) + ' to ' + new Date(T1).toISOString().slice(0, 10) + ', 15-minute candles. These combinations came out best in the last-100-days watchlist test (reports/watchlist_last100d_backtest.md); this run checks them on data they were NOT picked from (everything before the last 100 days is untouched by that selection, the last 100 days are inside this period). Same-day exit (15:15), stop -30% / target +30%, ATM option scaled by each stock\'s volatility, 10,000 Rs premium, entries 10:15-14:30 IST, ADX >= 20, **no limit on open positions** (every symbol trades on its own), modelled option prices. The volume strategy needs volume data, so the two indices never trade here. p = against a coin flip on the same entry bars (100+ trades); adjusted p = p x ' + K + ' variants.' + NLc);
+  T.push('| Rule | Trades | Net Rs/trade, no spread | **Net, 1% spread** | Net, 2% spread | PF (1%) | Win (1%) | First 60% / last 40% (1%) | Coin flip, same bars (1%) | p | Adjusted p | Quarters profitable (1%) | Underlying 1h (bps) |' + NLc + '|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  [...rows].sort((a, b) => b.res.sd_vol_sp1.st.avg - a.res.sd_vol_sp1.st.avg).forEach(x => {
+    const a = x.res.sd_vol, b = x.res.sd_vol_sp1, c = x.res.sd_vol_sp2;
+    T.push('| ' + x.name + ' | ' + b.st.n + ' | ' + (a.st.n ? f0c(a.st.avg) : '-') + ' | **' + (b.st.n ? f0c(b.st.avg) : '-') + '** | ' + (c.st.n ? f0c(c.st.avg) : '-') + ' | ' + b.st.pf.toFixed(2) + ' | ' + b.st.win.toFixed(0) + '% | ' + (b.st.nFirst ? f0c(b.st.first) : '-') + ' / ' + (b.st.nLast ? f0c(b.st.last) : '-') + ' | ' + (b.st.n >= 100 ? f0c(b.ctrl) : '-') + ' | ' + (b.st.n >= 100 ? b.p.toFixed(3) : '-') + ' | ' + (b.st.n >= 100 ? b.adj.toFixed(2) : '-') + ' | ' + b.qPos + ' of ' + b.qN + ' | ' + x.raw.bps.toFixed(1) + ' |');
+  });
+  T.push('');
+  const g = (id, m = 'sd_vol_sp1') => rows.find(x => x.id === id).res[m].st;
+  const both = rows.filter(x => !['random'].includes(x.id) && x.res.sd_vol_sp1.st.n >= 100 && x.res.sd_vol_sp1.st.avg > 0 && x.res.sd_vol_sp1.st.first > 0 && x.res.sd_vol_sp1.st.last > 0);
+  T.push('## What the numbers say' + NLc);
+  T.push('- On the last-100-days test the best combination was EMA trend + Volume push + S/R at +241 per trade net. On the 4-year data: **' + f0c(g('tvs').avg) + '** (' + g('tvs').n + ' trades). EMA trend + Volume push: **' + f0c(g('tv').avg) + '** (' + g('tv').n + ' trades) with a 1% spread, ' + f0c(g('tv', 'sd_vol').avg) + ' with none.');
+  T.push('- The current default, VWAP alone: ' + f0c(g('vwap').avg) + ' net with a 1% spread over ' + g('vwap').n + ' trades (the yardstick, random direction: ' + f0c(g('random').avg) + ').');
+  T.push('- Rules with 100+ trades that are positive after a 1% spread AND in both halves of the period: **' + (both.length ? both.map(x => x.name + ' (' + x.res.sd_vol_sp1.st.n + ' trades, ' + f0c(x.res.sd_vol_sp1.st.avg) + ' Rs)').join('; ') : 'none') + '**.');
+  const better = rows.filter(x => x.id !== 'vwap' && x.id !== 'random' && x.res.sd_vol_sp1.st.n >= 100 && x.res.sd_vol_sp1.st.avg > g('vwap').avg);
+  T.push('- Combinations that beat VWAP alone on the net average (100+ trades): **' + (better.length ? better.map(x => x.name).join('; ') : 'none') + '**.');
+  T.push('');
+  const ORIG = new Set(['_NSEI', '_NSEBANK', 'RELIANCE_NS', 'HDFCBANK_NS', 'ICICIBANK_NS', 'INFY_NS', 'TCS_NS', 'SBIN_NS', 'TATASTEEL_NS', 'AXISBANK_NS', 'ITC_NS', 'LT_NS', 'BHARTIARTL_NS', 'MARUTI_NS']);
+  const yr = ts => String(new Date(ts + 19800000).getUTCFullYear());
+  const cell = a => (a.length >= 15 ? a.length + ' trades, ' + f0c(mean(a)) + ' Rs (win ' + (a.filter(k => k.net > 0).length / a.length * 100).toFixed(0) + '%)' : a.length + ' trades (too few)');
+  T.push('## The top combinations in detail (1% spread)' + NLc);
+  const top = [...rows].filter(x => x.id !== 'random' && x.id !== 'vwap' && x.res.sd_vol_sp1.st.n >= 100).sort((a, b) => b.res.sd_vol_sp1.st.avg - a.res.sd_vol_sp1.st.avg).slice(0, 3);
+  for (const x of [...top, rows.find(r => r.id === 'vwap')]) {
+    const t = x.res.sd_vol_sp1.tr;
+    T.push('### ' + x.name + NLc);
+    T.push('- By year: ' + [...new Set(t.map(a => yr(a.ts)))].sort().map(y => y + ': ' + cell(t.filter(a => yr(a.ts) === y))).join(' | '));
+    T.push('- Original symbols: ' + cell(t.filter(a => ORIG.has(a.sym))) + ' | new symbols: ' + cell(t.filter(a => !ORIG.has(a.sym))));
+    T.push('- Calls vs puts: BUY CE ' + cell(t.filter(a => a.dir > 0)) + ' | BUY PE ' + cell(t.filter(a => a.dir < 0)));
+    T.push('- Time of day: 10:15-11:30 ' + cell(t.filter(a => a.min < 11 * 60 + 30)) + ' | 11:30-13:00 ' + cell(t.filter(a => a.min >= 11 * 60 + 30 && a.min < 13 * 60)) + ' | 13:00-14:30 ' + cell(t.filter(a => a.min >= 13 * 60)));
+    const per = new Map(); t.forEach(a => { const o = per.get(a.sym) || { n: 0, net: 0 }; o.n++; o.net += a.net; per.set(a.sym, o); });
+    const sy = [...per.entries()].map(([k, o]) => ({ k: k.replace(/_NS$/, '').replace(/^_/, ''), n: o.n, net: o.net })).sort((a, b) => b.net - a.net);
+    const total = t.reduce((a, k) => a + k.net, 0), pos = sy.filter(r => r.net > 0).reduce((a, r) => a + r.net, 0);
+    T.push('- Symbols traded: ' + sy.length + ', profitable: ' + sy.filter(r => r.net > 0).length + '. Top five contribute ' + (pos ? f0c(sy.slice(0, 5).reduce((a, r) => a + r.net, 0) / pos * 100) : '-') + '% of the profit made by profitable symbols: ' + sy.slice(0, 5).map(r => r.k + ' ' + f0c(r.net) + ' (' + r.n + ')').join(', ') + '. Total ' + f0c(total) + ' Rs.');
+    T.push('');
+  }
+  fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'reports', 'volume_combinations_4y' + (MAXPOS === 5 ? '' : '_slots' + MAXPOS) + '.md'), T.join(NLc) + NLc);
+  console.log(T.slice(0, 22).join(NLc));
+  process.exit(0);
+}
+
+// ───────────── every strategy on each watchlist stock, and combinations, on the last N days: LAST_DAYS=100 MAXPOS=99 DATA=1500d ONLY=... node tools/bt_strategies.mjs watchlist ─────────────
+if (process.argv[2] === 'watchlist') {
+  const NLw = String.fromCharCode(10), f0w = x => String(Math.round(x));
+  const STRATS = [['trend', 'EMA trend'], ['rsi', 'RSI'], ['vwap', 'VWAP'], ['structure', 'Structure'], ['fvg', 'FVG retest'], ['volume', 'Volume push'], ['smc', 'SMC (LuxAlgo)'], ['sr', 'Support/resistance']];
+  const LBL = Object.fromEntries(STRATS), IDS = STRATS.map(x => x[0]);
+  const NET = MODELS.sd_vol_sp1, GROSS = MODELS.sd_vol;
+  const symName = u => u.sym.replace(/_NS$/, '').replace(/^_/, '').replace('NSEI', 'NIFTY 50').replace('NSEBANK', 'BANK NIFTY');
+  const winDays = new Set(); U.forEach(u => u.candles.forEach((c, i) => { if (c.ts >= WINDOW_START) winDays.add(u.meta[i].day); }));
+  const mean = a => (a.length ? a.reduce((x, t) => x + t.net, 0) / a.length : 0);
+  const cellOf = (base, flipSeed) => {
+    let cands = base;
+    if (flipSeed !== undefined) { let sd = flipSeed; const rr = () => { sd = (Math.imul(sd, 1664525) + 1013904223) >>> 0; return sd / 4294967296; }; cands = base.map(c => ({ ...c, dir: rr() < 0.5 ? -c.dir : c.dir })); }
+    const tr = simulate(cands, NET), gr = simulate(cands, GROSS), st = stats(tr, CUT);
+    return { n: st.n, avg: st.avg, gross: mean(gr), win: st.win, pf: st.pf, total: st.net, first: st.first, last: st.last, nFirst: st.nFirst, nLast: st.nLast };
+  };
+  // singles: each strategy on each stock
+  const syms = U.map(u => u.sym);
+  const single = {}; const bases = [];
+  for (const sym of syms) { single[sym] = {}; for (const id of IDS) { const base = candidates({ mode: 'all', ids: [id], only: sym }); single[sym][id] = cellOf(base); bases.push(base); } }
+  // portfolio level: each strategy over the whole watchlist, and every pair / triple that must agree
+  const port = {}; const portBases = {};
+  for (const id of IDS) { portBases[id] = candidates({ mode: 'all', ids: [id] }); port[id] = cellOf(portBases[id]); }
+  const combos = [];
+  for (let a = 0; a < IDS.length; a++) for (let b = a + 1; b < IDS.length; b++) { combos.push([IDS[a], IDS[b]]); for (let c = b + 1; c < IDS.length; c++) combos.push([IDS[a], IDS[b], IDS[c]]); }
+  const comboPort = combos.map(ids => { const base = candidates({ mode: 'all', ids }); return { ids, name: ids.map(x => LBL[x]).join(' + '), ...cellOf(base) }; });
+  // best combination per stock
+  const perStockCombo = {};
+  const comboBases = [];
+  for (const sym of syms) {
+    perStockCombo[sym] = combos.map(ids => { const base = candidates({ mode: 'all', ids, only: sym }); comboBases.push(base); return { ids, name: ids.map(x => LBL[x]).join(' + '), ...cellOf(base) }; });
+  }
+  // how many cells look good by luck: the same signals with random directions
+  const R = 20, nullSingles = [], nullCombos = [];
+  for (let r = 0; r < R; r++) {
+    const cs = bases.map(b => cellOf(b, 1000 + r)).filter(c => c.n >= 10);
+    nullSingles.push({ pos: cs.filter(c => c.avg > 0).length, big: cs.filter(c => c.avg > 100).length, best: Math.max(...cs.map(c => c.avg)), cells: cs.length });
+    const cc = comboBases.map(b => cellOf(b, 5000 + r)).filter(c => c.n >= 10);
+    nullCombos.push({ pos: cc.filter(c => c.avg > 0).length, big: cc.filter(c => c.avg > 100).length, best: Math.max(...cc.map(c => c.avg)), cells: cc.length });
+  }
+  const rng = a => [Math.min(...a), Math.max(...a)];
+  const med = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+  const real = {
+    singles: Object.values(single).flatMap(o => Object.values(o)).filter(c => c.n >= 10),
+    combos: Object.values(perStockCombo).flat().filter(c => c.n >= 10),
+  };
+  const T = [];
+  const first = new Date(WINDOW_START).toISOString().slice(0, 10), last = new Date(T1).toISOString().slice(0, 10);
+  T.push('# Every strategy on each watchlist stock, and combinations: the last ' + LAST_DAYS + ' days' + NLw);
+  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `LAST_DAYS=' + LAST_DAYS + ' MAXPOS=' + MAXPOS + ' DATA=' + SUF + ' node tools/bt_strategies.mjs watchlist`. **Window: ' + first + ' to ' + last + ' (' + winDays.size + ' trading days).** Stocks: the dashboard scan list that can be traded in options (' + U.length + '): ' + U.map(symName).join(', ') + '. SENSEX is left out (no NSE options) and the news strategy too (no headline history). Each strategy is a rule on its own: long when it votes up, short when it votes down (strategy as the app computes it: structure BOS/CHoCH, FVG retest, VWAP side, EMA stack, RSI, volume push, SMC = LuxAlgo port, S/R = previous-day high/low rules). Signal at a bar close, fill at the next open, entries 10:15-14:30 IST, ADX >= 20, ATM option, stop -30% / target +30%, squared off at 15:15 the same day, 10,000 Rs premium per trade, **modelled option prices** with each stock\'s premium scaled by its volatility, full option charges and a **1% round-trip spread** (the NET column; gross = without the spread). One position per stock at a time. "First half / second half" split the window at its middle.' + NLw);
+  T.push('**Read this first:** about ' + winDays.size + ' trading days is a short sample. A stock + strategy cell has only a handful to a few dozen trades, so the best-looking cells are partly luck; the "reality check" section counts how many cells would look this good with RANDOM directions. Results are in-sample (nothing is tested on data it was not chosen from).' + NLw);
+
+  T.push('## 1. Each strategy on each stock: net Rs per trade (number of trades)' + NLw);
+  T.push('| Stock | ' + STRATS.map(x => x[1]).join(' | ') + ' |' + NLw + '|---|' + STRATS.map(() => '---').join('|') + '|');
+  for (const sym of syms) T.push('| ' + symName(U.find(u => u.sym === sym)) + ' | ' + IDS.map(id => { const c = single[sym][id]; return c.n ? (c.avg > 0 ? '**' + f0w(c.avg) + '**' : f0w(c.avg)) + ' (' + c.n + ')' : '-'; }).join(' | ') + ' |');
+  T.push('');
+  T.push('Bold = positive net after the spread. Cells with fewer than 10 trades are not trusted below.' + NLw);
+
+  const good = [], okay = [];
+  for (const sym of syms) for (const id of IDS) { const c = single[sym][id]; if (c.n < 10 || !(c.avg > 0)) continue; const row = { sym: symName(U.find(u => u.sym === sym)), strat: LBL[id], ...c }; okay.push(row); if (c.nFirst >= 3 && c.nLast >= 3 && c.first > 0 && c.last > 0) good.push(row); }
+  const showRow = x => '| ' + x.sym + ' | ' + x.strat + ' | ' + x.n + ' | **' + f0w(x.avg) + '** | ' + f0w(x.gross) + ' | ' + x.win.toFixed(0) + '% | ' + x.pf.toFixed(2) + ' | ' + f0w(x.total) + ' | ' + f0w(x.first) + ' (' + x.nFirst + ') / ' + f0w(x.last) + ' (' + x.nLast + ') |';
+  const head = '| Stock | Strategy | Trades | Net Rs/trade | Gross Rs/trade | Win | PF | Net total Rs | First half / second half (trades) |' + NLw + '|---|---|---|---|---|---|---|---|---|';
+  T.push('## 2. Which stock and which strategy went well' + NLw);
+  T.push('**Positive net after the spread, at least 10 trades, and positive in BOTH halves of the window** (' + good.length + ' of ' + real.singles.length + ' cells with 10+ trades):' + NLw);
+  T.push(good.length ? head : '*none*');
+  good.sort((a, b) => b.avg - a.avg).forEach(x => T.push(showRow(x)));
+  T.push('');
+  T.push('**All cells with a positive net and at least 10 trades** (' + okay.length + '):' + NLw);
+  T.push(okay.length ? head : '*none*');
+  okay.sort((a, b) => b.avg - a.avg).forEach(x => T.push(showRow(x)));
+  T.push('');
+  const bad = real.singles.length - okay.length;
+  T.push('The other ' + bad + ' cells with 10+ trades lost money after the spread.' + NLw);
+
+  T.push('## 3. Each strategy across the whole watchlist' + NLw);
+  T.push('| Strategy | Trades | Net Rs/trade | Gross Rs/trade | Win | PF | First half / second half | Stocks profitable (10+ trades) |' + NLw + '|---|---|---|---|---|---|---|---|');
+  [...IDS].sort((a, b) => port[b].avg - port[a].avg).forEach(id => {
+    const c = port[id], cells = syms.map(sy => single[sy][id]).filter(x => x.n >= 10);
+    T.push('| ' + LBL[id] + ' | ' + c.n + ' | **' + f0w(c.avg) + '** | ' + f0w(c.gross) + ' | ' + c.win.toFixed(0) + '% | ' + c.pf.toFixed(2) + ' | ' + f0w(c.first) + ' / ' + f0w(c.last) + ' | ' + cells.filter(x => x.avg > 0).length + ' of ' + cells.length + ' |');
+  });
+  T.push('');
+  T.push('## 4. Combinations across the whole watchlist (all must agree)' + NLw);
+  const cp = comboPort.filter(c => c.n >= 30).sort((a, b) => b.avg - a.avg);
+  T.push(comboPort.length + ' pairs and triples; ' + cp.length + ' have 30+ trades. Best 15 and worst 5:' + NLw);
+  T.push('| Combination | Trades | Net Rs/trade | Gross Rs/trade | Win | PF | First half / second half |' + NLw + '|---|---|---|---|---|---|---|');
+  [...cp.slice(0, 15), ...cp.slice(-5)].forEach(c => T.push('| ' + c.name + ' | ' + c.n + ' | **' + f0w(c.avg) + '** | ' + f0w(c.gross) + ' | ' + c.win.toFixed(0) + '% | ' + c.pf.toFixed(2) + ' | ' + f0w(c.first) + ' / ' + f0w(c.last) + ' |'));
+  T.push('');
+  const cpGood = cp.filter(c => c.avg > 0 && c.first > 0 && c.last > 0);
+  T.push('Combinations with 30+ trades that are positive after the spread AND in both halves: **' + (cpGood.length ? cpGood.map(c => c.name + ' (' + c.n + ' trades, ' + f0w(c.avg) + ' Rs)').join('; ') : 'none') + '**.' + NLw);
+
+  T.push('## 5. Best combination for each stock' + NLw);
+  T.push('Out of ' + combos.length + ' pairs and triples per stock, the best one with at least 10 trades (this is the most over-fitted view: the more combinations tried, the better the best one looks by chance):' + NLw);
+  T.push('| Stock | Best combination | Trades | Net Rs/trade | Gross | Win | First half / second half |' + NLw + '|---|---|---|---|---|---|---|');
+  for (const sym of syms) {
+    const best = perStockCombo[sym].filter(c => c.n >= 10).sort((a, b) => b.avg - a.avg)[0];
+    T.push('| ' + symName(U.find(u => u.sym === sym)) + ' | ' + (best ? best.name + ' | ' + best.n + ' | **' + f0w(best.avg) + '** | ' + f0w(best.gross) + ' | ' + best.win.toFixed(0) + '% | ' + f0w(best.first) + ' / ' + f0w(best.last) : 'no combination with 10+ trades | - | - | - | - | -') + ' |');
+  }
+  T.push('');
+  T.push('## 6. Reality check: how many cells look good by luck' + NLw);
+  T.push('The same signals, but each trade\'s direction flipped by a coin toss, repeated ' + R + ' times (the "luck" column is the range over those repeats). If the real count is not clearly above that range, the good-looking cells are what luck produces.' + NLw);
+  T.push('| | Real | Luck (random directions), range over ' + R + ' repeats |' + NLw + '|---|---|---|');
+  T.push('| Stock x strategy cells with 10+ trades | ' + real.singles.length + ' | ' + rng(nullSingles.map(x => x.cells)).join('-') + ' |');
+  T.push('| ... with positive net | ' + real.singles.filter(c => c.avg > 0).length + ' | ' + rng(nullSingles.map(x => x.pos)).join('-') + ' (median ' + med(nullSingles.map(x => x.pos)) + ') |');
+  T.push('| ... with net above +100 Rs per trade | ' + real.singles.filter(c => c.avg > 100).length + ' | ' + rng(nullSingles.map(x => x.big)).join('-') + ' (median ' + med(nullSingles.map(x => x.big)) + ') |');
+  T.push('| ... best single cell (Rs per trade) | ' + f0w(Math.max(...real.singles.map(c => c.avg))) + ' | ' + rng(nullSingles.map(x => Math.round(x.best))).join('-') + ' |');
+  T.push('| Stock x combination cells with 10+ trades | ' + real.combos.length + ' | ' + rng(nullCombos.map(x => x.cells)).join('-') + ' |');
+  T.push('| ... with positive net | ' + real.combos.filter(c => c.avg > 0).length + ' | ' + rng(nullCombos.map(x => x.pos)).join('-') + ' (median ' + med(nullCombos.map(x => x.pos)) + ') |');
+  T.push('| ... with net above +100 Rs per trade | ' + real.combos.filter(c => c.avg > 100).length + ' | ' + rng(nullCombos.map(x => x.big)).join('-') + ' (median ' + med(nullCombos.map(x => x.big)) + ') |');
+  T.push('| ... best combination cell (Rs per trade) | ' + f0w(Math.max(...real.combos.map(c => c.avg))) + ' | ' + rng(nullCombos.map(x => Math.round(x.best))).join('-') + ' |');
+  T.push('');
+  fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'reports', 'watchlist_last' + LAST_DAYS + 'd_backtest.md'), T.join(NLw) + NLw);
+  console.log(T.join(NLw).slice(0, 9000));
+  process.exit(0);
+}
 
 // ───────────── stress test of the VWAP-alone result: DATA=1500d node tools/bt_strategies.mjs vwap-stress ─────────────
 if (process.argv[2] === 'vwap-stress') {
@@ -343,7 +547,7 @@ if (process.argv[2] === 'default-test') {
   });
   const T = [];
   T.push((TREND_SET ? '# Structure + VWAP + EMA trend, with and without the same-day exit' : '# Candidate default settings, with and without the same-day exit') + NLd);
-  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `' + (TREND_SET ? 'SET=trend ' : '') + 'DATA=' + SUF + ' node tools/bt_strategies.mjs default-test`. ' + U.length + ' symbols, ' + new Date(T0).toISOString().slice(0, 10) + ' to ' + new Date(T1).toISOString().slice(0, 10) + ', 15-minute candles, **modelled option prices**. Signal at a bar close, fill at the next open, entries 10:15-14:30 IST, ADX >= 20, ATM option, stop -30% / target +30%, 10,000 Rs premium per trade after full option charges, at most 5 open, one per underlying. **Hold** = kept until stop or target (the CARRYFORWARD product, up to 4 days for indices / 20 for stocks). **Same-day** = also squared off at 15:15 the same day (the INTRADAY / MIS product). Random-direction yardstick, and for rules with 100+ trades a p-value against a **coin flip on the same entry bars** (times ' + K + ' tries = adjusted p; above about 0.05 is not evidence of an edge).' + NLd);
+  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `' + (TREND_SET ? 'SET=trend ' : '') + (MAXPOS === 5 ? '' : 'MAXPOS=' + MAXPOS + ' ') + 'DATA=' + SUF + ' node tools/bt_strategies.mjs default-test`. ' + U.length + ' symbols, ' + new Date(T0).toISOString().slice(0, 10) + ' to ' + new Date(T1).toISOString().slice(0, 10) + ', 15-minute candles, **modelled option prices**. Signal at a bar close, fill at the next open, entries 10:15-14:30 IST, ADX >= 20, ATM option, stop -30% / target +30%, 10,000 Rs premium per trade after full option charges, at most 5 open, one per underlying. **Hold** = kept until stop or target (the CARRYFORWARD product, up to 4 days for indices / 20 for stocks). **Same-day** = also squared off at 15:15 the same day (the INTRADAY / MIS product). Random-direction yardstick, and for rules with 100+ trades a p-value against a **coin flip on the same entry bars** (times ' + K + ' tries = adjusted p; above about 0.05 is not evidence of an edge).' + NLd);
   T.push('| Rule | Signals | Hold: trades | Hold: avg Rs | Same-day: trades | **Same-day: avg Rs** | Same-day PF | Win | First 60% / last 40% | Coin flip, same bars | p | Adjusted p | Quarters profitable | Underlying 1h (bps) |' + NLd + '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   [...rows].sort((a, b) => b.sameday.st.avg - a.sameday.st.avg).forEach(x => {
     const h = x.realistic.st, d = x.sameday;
@@ -380,7 +584,7 @@ if (process.argv[2] === 'default-test') {
     T.push('');
   }
   fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'reports', 'default_settings_backtest' + (TREND_SET ? '_trend' : '') + TAG + '.md'), T.join(NLd) + NLd);
+  fs.writeFileSync(path.join(root, 'reports', 'default_settings_backtest' + (TREND_SET ? '_trend' : '') + (MAXPOS === 5 ? '' : '_slots' + MAXPOS) + TAG + '.md'), T.join(NLd) + NLd);
   console.log(T.slice(0, 22).join(NLd));
   process.exit(0);
 }
