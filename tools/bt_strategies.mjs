@@ -89,7 +89,7 @@ function vote(u, i, id) {
     case 'smcdisp': return s[0];                         // old id, now the same as 'smc' (LuxAlgo port); kept so the combination lists keep running
     case 'htf': return u.htf[i];                         // higher-timeframe trend: price vs 15m EMA100 / EMA200 (about hourly 25 / 50)
     case 'random': { let h = 2166136261; const t = `${u.sym}${i}`; for (let q = 0; q < t.length; q++) h = Math.imul(h ^ t.charCodeAt(q), 16777619); return (h >>> 0) % 7 === 0 ? ((h >>> 8) & 1 ? 1 : -1) : 0; }
-    default: return 0;
+    default: return u.extra && u.extra[id] ? u.extra[id][i] : 0;
   }
 }
 /** A signal definition: {ids:[...], mode:'all'|'score', min, weights}. Returns +1/-1/0. */
@@ -132,6 +132,7 @@ function candidates(def) {
   for (const u of U) {
     if (def.exclude && def.exclude.includes(u.sym)) continue;
     if (def.only && u.sym !== def.only) continue;
+    if (def.indexOnly && !u.isIndex) continue;
     for (let i = Math.max(60, WINDOW_START ? u.candles.findIndex(c => c.ts >= WINDOW_START) : 60); i < u.candles.length - 1; i++) {
       const r = u.pre[i]; if (!r || r.adx < 20) continue;
       const m = u.meta[i];
@@ -480,6 +481,105 @@ if (process.argv[2] === 'vwap-stress') {
   fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
   fs.writeFileSync(path.join(root, 'reports', 'vwap_stress_test' + (MAXPOS === 5 ? '' : '_slots' + MAXPOS) + TAG + '.md'), T.join(NLv) + NLv);
   console.log(T.join(NLv).slice(0, 6000));
+  process.exit(0);
+}
+
+// ───────────── EMA 9 rejection: DATA=1500d MAXPOS=99 node tools/bt_strategies.mjs ema9 ─────────────
+// CE: price has been above the 9 EMA (a green candle closed fully above it), then a candle dips to the 9 EMA and is rejected (its low touches or
+// pierces the EMA, it closes back above it, green). PE is the mirror. The signal is read on the rejection candle's close, filled at the next open.
+if (process.argv[2] === 'ema9') {
+  const NLe = String.fromCharCode(10), f0e = x => String(Math.round(x));
+  const vols = U.map(u => {
+    const byDay = new Map(); u.candles.forEach((c, i) => byDay.set(u.meta[i].day, c.c));
+    const cl = [...byDay.values()], r = []; for (let k = 1; k < cl.length; k++) r.push(Math.log(cl[k] / cl[k - 1]));
+    const m = r.reduce((a, b) => a + b, 0) / r.length; return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / (r.length - 1));
+  });
+  const sv = U.map((u, i) => (u.isIndex ? null : vols[i])).filter(x => x).sort((a, b) => a - b), med = sv[Math.floor(sv.length / 2)];
+  U.forEach((u, i) => { u.volRatio = Math.min(2.5, Math.max(0.5, vols[i] / med)); });
+  const LOOK = 5;                                     // the green candle fully above the EMA must be within the last 5 bars, with no close below the EMA since
+  for (const u of U) {
+    const cs = u.candles, e9 = Indicators.ema(cs.map(c => c.c), 9), n = cs.length;
+    const loose = new Int8Array(n), strict = new Int8Array(n), rising = new Int8Array(n), side = new Int8Array(n);
+    for (let i = LOOK + 1; i < n; i++) {
+      const c = cs[i], e = e9[i];
+      side[i] = c.c > e ? 1 : c.c < e ? -1 : 0;
+      const bullRej = c.l <= e && c.c > e && c.c > c.o, bearRej = c.h >= e && c.c < e && c.c < c.o;
+      if (bullRej && cs[i - 1].c > e9[i - 1]) loose[i] = 1;
+      if (bearRej && cs[i - 1].c < e9[i - 1]) loose[i] = -1;
+      // strict: a green candle entirely above the EMA (low > EMA) in the last LOOK bars, and every close since then above the EMA (mirror for PE)
+      let up = false, dn = false;
+      for (let k = i - 1; k >= i - LOOK; k--) {
+        const b = cs[k];
+        if (!up && b.c > b.o && b.l > e9[k]) { up = true; for (let q = k + 1; q < i; q++) if (cs[q].c <= e9[q]) { up = false; break; } }
+        if (!dn && b.c < b.o && b.h < e9[k]) { dn = true; for (let q = k + 1; q < i; q++) if (cs[q].c >= e9[q]) { dn = false; break; } }
+      }
+      if (bullRej && up) strict[i] = 1; else if (bearRej && dn) strict[i] = -1;
+      if (strict[i] && Math.sign(e9[i] - e9[i - 1]) === strict[i]) rising[i] = strict[i];
+    }
+    u.extra = { e9loose: loose, e9strict: strict, e9slope: rising, e9side: side };
+  }
+  const SCEN = [['sd_vol', 'No spread'], ['sd_vol_sp1', '1% spread'], ['sd_vol_sp2', '2% spread']];
+  const A = ids => ({ mode: 'all', ids });
+  const LATE = 11 * 60 + 30;
+  const defs = [
+    { id: 'strict', name: 'EMA9 rejection (green candle above EMA9, then a rejection)', def: A(['e9strict']) },
+    { id: 'strict-late', name: '... entries from 11:30 (app window)', def: { ...A(['e9strict']), from: LATE } },
+    { id: 'strict-idx', name: '... Nifty + Bank Nifty only, from 11:30', def: { ...A(['e9strict']), from: LATE, indexOnly: true } },
+    { id: 'loose', name: 'EMA9 rejection, loose (previous close above EMA9 is enough)', def: A(['e9loose']) },
+    { id: 'slope', name: 'EMA9 rejection + EMA9 sloping the same way', def: A(['e9slope']) },
+    { id: 'strict-vwap', name: 'EMA9 rejection + VWAP agrees', def: A(['e9strict', 'vwap']) },
+    { id: 'strict-vwap-late', name: 'EMA9 rejection + VWAP agrees, from 11:30', def: { ...A(['e9strict', 'vwap']), from: LATE } },
+    { id: 'side', name: 'Reference: price above/below EMA9 (no rejection)', def: A(['e9side']) },
+    { id: 'vwap-late', name: 'Reference: VWAP alone from 11:30 (the current default)', def: { ...A(['vwap']), from: LATE } },
+    { id: 'random', name: 'Reference: random direction', def: A(['random']) },
+  ];
+  let sde = 4242; const rr = () => { sde = (Math.imul(sde, 1664525) + 1013904223) >>> 0; return sde / 4294967296; };
+  const erf = z => { const t = 1 / (1 + 0.3275911 * Math.abs(z)), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z); return z >= 0 ? y : -y; };
+  const control = (base, P, actual, n) => {
+    if (n < 100) return { ctrl: NaN, p: NaN };
+    const nets = [];
+    for (let k = 0; k < 6; k++) for (const t of simulate(base.map(c => ({ ...c, dir: rr() < 0.5 ? -c.dir : c.dir })), P)) nets.push(t.net);
+    const m = nets.reduce((a, b) => a + b, 0) / nets.length, sd = Math.sqrt(nets.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, nets.length - 1));
+    return { ctrl: m, p: 0.5 * (1 - erf((actual - m) / (sd / Math.sqrt(n)) / Math.SQRT2)) };
+  };
+  const quarter = ts => { const d = new Date(ts + 19800000); return d.getUTCFullYear() + 'Q' + (Math.floor(d.getUTCMonth() / 3) + 1); };
+  const yr = ts => String(new Date(ts + 19800000).getUTCFullYear());
+  const rows = defs.map(d => {
+    const base = candidates(d.def), out = { ...d, signals: base.length, raw: rawEdge(base), res: {} };
+    for (const [m] of SCEN) {
+      const tr = simulate(base, MODELS[m]), st = stats(tr, CUT), c = control(base, MODELS[m], st.avg, st.n);
+      const byQ = new Map(); tr.forEach(t => byQ.set(quarter(t.ts), (byQ.get(quarter(t.ts)) || 0) + t.net));
+      out.res[m] = { tr, st, ...c, qPos: [...byQ.values()].filter(v => v > 0).length, qN: byQ.size };
+    }
+    return out;
+  });
+  const K = defs.length - 3;
+  const T = [];
+  T.push('# EMA 9 rejection strategy backtest' + NLe);
+  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `DATA=' + SUF + ' MAXPOS=' + MAXPOS + ' node tools/bt_strategies.mjs ema9`. ' + U.length + ' symbols (Nifty 50, Bank Nifty and ' + (U.length - 2) + ' stocks), 15-minute candles, ' + new Date(T0).toISOString().slice(0, 10) + ' to ' + new Date(T1).toISOString().slice(0, 10) + '.' + NLe);
+  T.push('**The rule tested.** CE: a green candle closes entirely above the 9 EMA (its low is above the EMA); within the next ' + LOOK + ' candles, with every close staying above the EMA, a candle dips to the EMA (low at or below it) and is rejected (closes back above it, green). Buy the ATM CE at the next candle\'s open. PE: the mirror (a red candle entirely below the EMA, then a candle pokes up to the EMA and closes back below it, red). Variants: a loose version (the previous close above the EMA is enough), with the EMA sloping the same way, and with VWAP agreeing (the app\'s current default strategy).' + NLe);
+  T.push('**Engine (same as every earlier report).** Signal on the candle close, filled at the next open; entries 10:15-14:30 IST (or from 11:30 where stated), ADX >= 20; ATM option, 10,000 Rs premium per trade, stop -30% / target +30%, squared off at 15:15 the same day; one position per underlying, ' + (MAXPOS >= 99 ? 'no limit on the number open' : 'at most ' + MAXPOS + ' open') + '; full option charges; **modelled option prices** (no historical option candles exist): premium scaled by each stock\'s volatility, plus a round-trip bid-ask spread of 0%, 1% or 2% of the premium. p = chance a coin flip on the SAME entry bars does at least as well (100+ trades); ' + K + ' variants were tried, so multiply p by ' + K + ' before calling anything an edge. "Move 1h" = the underlying\'s average move in the signal\'s direction over the next hour, model-free, in basis points.' + NLe);
+  T.push('| Rule | Spread | Signals | Trades | Avg Rs/trade | PF | Win | First 60% / last 40% | Coin flip | p | Quarters + | Move 1h (bps) |' + NLe + '|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const x of rows) for (const [m, label] of SCEN) {
+    const r = x.res[m], st = r.st;
+    T.push('| ' + x.name + ' | ' + label + ' | ' + x.signals + ' | ' + st.n + ' | ' + (st.n ? '**' + f0e(st.avg) + '**' : '-') + ' | ' + st.pf.toFixed(2) + ' | ' + st.win.toFixed(0) + '% | ' + (st.nFirst ? f0e(st.first) : '-') + ' / ' + (st.nLast ? f0e(st.last) : '-') + ' | ' + (Number.isFinite(r.ctrl) ? f0e(r.ctrl) : '-') + ' | ' + (Number.isFinite(r.p) ? r.p.toFixed(3) : '-') + ' | ' + r.qPos + ' of ' + r.qN + ' | ' + x.raw.bps.toFixed(1) + ' |');
+  }
+  T.push('');
+  const main = rows.find(x => x.id === 'strict').res.sd_vol_sp1.tr;
+  const per = new Map(); main.forEach(t => { const o = per.get(t.sym) || { n: 0, net: 0 }; o.n++; o.net += t.net; per.set(t.sym, o); });
+  const syms = [...per.entries()].map(([k, o]) => ({ k: k.replace(/_NS$/, '').replace(/^_/, '^'), n: o.n, net: o.net })).sort((a, b) => b.net - a.net);
+  const side = a => a.length ? a.length + ' trades, ' + f0e(a.reduce((x, t) => x + t.net, 0) / a.length) + ' Rs' : '-';
+  T.push('## Detail: the main rule, 1% spread' + NLe);
+  T.push('- Symbols profitable: ' + syms.filter(q => q.net > 0).length + ' of ' + syms.length + '. Best: ' + syms.slice(0, 5).map(q => q.k + ' ' + f0e(q.net) + ' (' + q.n + ')').join(', ') + '. Worst: ' + syms.slice(-5).reverse().map(q => q.k + ' ' + f0e(q.net) + ' (' + q.n + ')').join(', ') + '.');
+  T.push('- By year: ' + [...new Set(main.map(t => yr(t.ts)))].sort().map(y => y + ' ' + side(main.filter(t => yr(t.ts) === y))).join(' | '));
+  T.push('- BUY CE: ' + side(main.filter(t => t.dir > 0)) + ' | BUY PE: ' + side(main.filter(t => t.dir < 0)));
+  T.push('- Indices only: ' + side(main.filter(t => t.idx)) + ' | stocks only: ' + side(main.filter(t => !t.idx)));
+  const ex = {}; main.forEach(t => { ex[t.why] = (ex[t.why] || 0) + 1; });
+  T.push('- Exits: ' + Object.entries(ex).map(([k, v]) => k + ' ' + v).join(', ') + ' (SL = -30% stop, TP = +30% target, SQ = squared off at 15:15)');
+  T.push('');
+  fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'reports', 'ema9_rejection_backtest' + TAG + '.md'), T.join(NLe) + NLe);
+  console.log(T.join(NLe));
   process.exit(0);
 }
 

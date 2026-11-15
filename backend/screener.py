@@ -283,7 +283,7 @@ async def run_screen(pool, force_ingest: bool = True) -> dict:
         ban = await asyncio.to_thread(sdata.fetch_ban_list, bhav_date) if bhav_date else None
         if force_ingest:
             state["phase"] = "daily candles"
-            await ingest_candles(pool, symbols + [BENCH], today)
+            await ingest_candles(pool, symbols + [BENCH, "^NSEBANK"], today)      # Bank Nifty: for the pre-market report's levels
         await store_delivery(pool, bhav_date, bhav)
         state["phase"] = "fundamentals"
         fdata, fetched = await load_fundamentals(pool)

@@ -1450,6 +1450,10 @@
               <label class="nf-check"><input type="checkbox" id="nf-positions"> Open positions: in a loss, or close to the stop-loss / target</label>
               <label class="nf-check nf-sub">Loss alert from <input id="nf-loss" type="number" min="1" max="90" step="1" style="width:64px"> % below entry, then every further 10%</label>
               <label class="nf-check nf-sub">"Close to" means <input id="nf-near" type="number" min="50" max="99" step="1" style="width:64px"> % of the way to the stop or target</label>
+              <label class="nf-check"><input type="checkbox" id="nf-premarket"> Pre-market report at 8:45 AM on trading days
+                <button type="button" class="btn btn-ghost btn-sm" id="pm-preview" style="margin-left:6px">Preview</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="pm-send">Send now</button></label>
+              <pre id="pm-text" class="sc-s" style="display:none;white-space:pre-wrap;max-height:320px;overflow:auto;margin:4px 0 8px"></pre>
               <label class="nf-check"><input type="checkbox" id="nf-screener"> Nightly Screener summary (stocks at the feed score, with their setups)</label>
               <label class="nf-check"><input type="checkbox" id="nf-calls"> Calls at or above <input id="nf-conf" type="number" min="1" max="100" step="1" style="width:64px"> % confidence</label>
               <div class="at-set-actions">

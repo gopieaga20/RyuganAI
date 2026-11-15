@@ -58,6 +58,7 @@ import auth
 import account
 import screener
 import delivery
+import premarket
 import crypto
 import ai_providers
 
@@ -98,9 +99,10 @@ async def lifespan(app: FastAPI):
     auto_task = asyncio.create_task(_autotrade_loop(pool))
     exit_task = asyncio.create_task(_live_exit_loop(pool))
     screener_task = asyncio.create_task(screener.screener_loop(pool))
+    premarket_task = asyncio.create_task(premarket.premarket_loop(pool))
     yield
     master_task.cancel()
-    for task in (watcher_task, auto_task, exit_task, screener_task):
+    for task in (watcher_task, auto_task, exit_task, screener_task, premarket_task):
         task.cancel()
         try:
             await task
@@ -713,6 +715,8 @@ async def require_login(request: Request, call_next):
 
 app.include_router(account.router)
 app.include_router(screener.router)
+app.include_router(premarket.router)
+premarket.hooks["news"] = lambda q, limit: get_news(q=q, limit=limit)
 account.hooks["live_off"] = lambda: _live_state.update(enabled=False, enabled_at=None)
 
 app.add_middleware(

@@ -213,7 +213,7 @@ function addSymbol() {
 }
 
 /* ───────────── Telegram alerts ───────────── */
-const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'positions', 'calls', 'screener'];
+const NF_KINDS = ['enabled', 'live_orders', 'live_exits', 'paper', 'positions', 'calls', 'screener', 'premarket'];
 
 async function loadAlerts() {
   try {
@@ -237,7 +237,20 @@ async function testAlert() {
   catch (e) { DOM.setText('nf-msg', e.message); }
 }
 
+async function premarketReport(e, send) {
+  e.preventDefault();
+  const box = $('pm-text');
+  DOM.setText('nf-msg', send ? 'Building and sending the report…' : 'Building the report…');
+  try {
+    const r = send ? await post('/api/premarket/send', {}) : await api('/api/premarket/preview');
+    box.textContent = r.text; box.style.display = '';
+    DOM.setText('nf-msg', send ? 'Pre-market report sent to Telegram.' : 'Preview below (nothing was sent).');
+  } catch (err) { DOM.setText('nf-msg', err.message); }
+}
+
 function wireSettings() {
+  $('pm-preview')?.addEventListener('click', e => premarketReport(e, false));
+  $('pm-send')?.addEventListener('click', e => premarketReport(e, true));
   $('nf-save')?.addEventListener('click', saveAlerts);
   $('nf-test')?.addEventListener('click', testAlert);
   $('at-settings-btn')?.addEventListener('click', loadAlerts);

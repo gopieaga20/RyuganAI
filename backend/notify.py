@@ -16,8 +16,8 @@ from typing import Optional
 import httpx
 
 SETTINGS_KEY = "notify_settings"
-KINDS = ("live_orders", "live_exits", "paper", "calls", "positions", "screener")
-DEFAULTS = {"enabled": False, "live_orders": True, "live_exits": True, "paper": True, "calls": True, "positions": True, "screener": True,
+KINDS = ("live_orders", "live_exits", "paper", "calls", "positions", "screener", "premarket")
+DEFAULTS = {"enabled": False, "live_orders": True, "live_exits": True, "paper": True, "calls": True, "positions": True, "screener": True, "premarket": True,
             "call_min_confidence": 80, "loss_alert_pct": 5, "near_pct": 80}
 SEND_TIMEOUT = 8.0
 MAX_PER_MINUTE = 20
