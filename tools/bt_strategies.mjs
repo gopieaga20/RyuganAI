@@ -97,6 +97,7 @@ function signal(u, i, def) {
   const d0 = signal0(u, i, def);
   if (d0 && def.also) for (const id of def.also) if (vote(u, i, id) !== d0) return 0;      // extra strategies that must agree with the main signal
   if (d0 && def.notAgainst) for (const id of def.notAgainst) if (vote(u, i, id) === -d0) return 0;   // ... and ones that may be silent but must not point the other way
+  if (d0 && def.room && u.room?.[def.room]?.[i] && (u.room[def.room][i] & (d0 > 0 ? 1 : 2))) return 0;   // no room to the next level: CE blocked (bit 1) / PE blocked (bit 2)
   return d0;
 }
 function signal0(u, i, def) {
@@ -164,7 +165,9 @@ function runOption(c, P) {
 function simulate(cands, P) {
   const open = [], trades = [];
   for (const c of cands) {
-    for (let q = open.length - 1; q >= 0; q--) if (open[q].exitTs <= c.ts) open.splice(q, 1);
+    // a trade that exits during bar j frees its slot only for entries filled AFTER bar j (fixed 16 Nov 2026: before, an entry at bar j's open was allowed
+    // when the previous trade exited during bar j, which let the engine pick entries by that bar's outcome; REENTER_SAME_BAR=1 restores the old rule for comparison)
+    for (let q = open.length - 1; q >= 0; q--) if (process.env.REENTER_SAME_BAR ? open[q].exitTs <= c.ts : open[q].exitTs < c.ts) open.splice(q, 1);
     if (open.length >= MAXPOS || open.some(o => o.sym === c.u.sym)) continue;
     const r = runOption(c, P); open.push({ exitTs: r.exitTs, sym: c.u.sym });
     const ent = 10000, ext = ent * (1 + r.ret), chg = Indicators.charges(ent, ext, 1, 'options') + ent * (P.spread || 0);
@@ -481,6 +484,123 @@ if (process.argv[2] === 'vwap-stress') {
   fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
   fs.writeFileSync(path.join(root, 'reports', 'vwap_stress_test' + (MAXPOS === 5 ? '' : '_slots' + MAXPOS) + TAG + '.md'), T.join(NLv) + NLv);
   console.log(T.join(NLv).slice(0, 6000));
+  process.exit(0);
+}
+
+// ───────────── room to the next level: DATA=1500d MAXPOS=99 node tools/bt_strategies.mjs srroom ─────────────
+// Before a CE: is the nearest resistance (previous day high, or a swing high formed today) within D above the price? Then no CE. PE: support within D below.
+// D = a % of price (0.08% = 20 points on a 25,000 Nifty). Swing = a 15m bar whose high (low) is the highest (lowest) of the 2 bars either side, confirmed 2 bars later, today only.
+if (process.argv[2] === 'srroom') {
+  const NLr = String.fromCharCode(10), f0r = x => String(Math.round(x));
+  const vols = U.map(u => {
+    const byDay = new Map(); u.candles.forEach((c, i) => byDay.set(u.meta[i].day, c.c));
+    const cl = [...byDay.values()], r = []; for (let k = 1; k < cl.length; k++) r.push(Math.log(cl[k] / cl[k - 1]));
+    const m = r.reduce((a, b) => a + b, 0) / r.length; return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / (r.length - 1));
+  });
+  const sv = U.map((u, i) => (u.isIndex ? null : vols[i])).filter(x => x).sort((a, b) => a - b), med = sv[Math.floor(sv.length / 2)];
+  U.forEach((u, i) => { u.volRatio = Math.min(2.5, Math.max(0.5, vols[i] / med)); });
+  const PCTS = [0.04, 0.08, 0.15, 0.30];
+  for (const u of U) {
+    const cs = u.candles, n = cs.length;
+    u.room = {};
+    // previous session high / low for every bar, and today's confirmed swing levels
+    const pdh = new Float64Array(n).fill(NaN), pdl = new Float64Array(n).fill(NaN);
+    const swH = new Array(n), swL = new Array(n);
+    let curDay = null, prevH = NaN, prevL = NaN, dayH = -Infinity, dayL = Infinity, start = 0, hs = [], ls = [];
+    for (let i = 0; i < n; i++) {
+      const d = u.meta[i].day;
+      if (d !== curDay) { if (curDay !== null) { prevH = dayH; prevL = dayL; } curDay = d; dayH = -Infinity; dayL = Infinity; start = i; hs = []; ls = []; }
+      dayH = Math.max(dayH, cs[i].h); dayL = Math.min(dayL, cs[i].l);
+      pdh[i] = prevH; pdl[i] = prevL;
+      const k = i - 2;                                   // the bar that becomes a confirmed swing now
+      if (k - 2 >= start) {
+        const w = cs.slice(k - 2, i + 1);
+        if (cs[k].h >= Math.max(...w.map(b => b.h))) hs = [...hs, cs[k].h];
+        if (cs[k].l <= Math.min(...w.map(b => b.l))) ls = [...ls, cs[k].l];
+      }
+      swH[i] = hs; swL[i] = ls;
+    }
+    for (const pct of PCTS) for (const kind of ['pd', 'sw', 'td']) {
+      const arr = new Uint8Array(n);
+      for (let i = 0; i < n; i++) {
+        const c = cs[i].c, D = c * pct / 100;
+        const res = [...(kind !== 'td' ? [pdh[i]] : []), ...(kind !== 'pd' ? swH[i] : [])].filter(x => Number.isFinite(x));
+        const sup = [...(kind !== 'td' ? [pdl[i]] : []), ...(kind !== 'pd' ? swL[i] : [])].filter(x => Number.isFinite(x));
+        let b = 0;
+        if (res.some(r => r >= c && r - c <= D)) b |= 1;
+        if (sup.some(x => x <= c && c - x <= D)) b |= 2;
+        arr[i] = b;
+      }
+      u.room[kind + pct] = arr;
+    }
+  }
+  const SCEN = [['sd_vol', 'No spread'], ['sd_vol_sp1', '1% spread'], ['sd_vol_sp2', '2% spread']];
+  const LATE = 11 * 60 + 30, V = { mode: 'all', ids: ['vwap'], from: LATE };
+  const defs = [
+    { id: 'base', name: 'VWAP alone from 11:30 (current default)', def: V },
+    { id: 'sw0.08', name: '+ room rule: prev day H/L + today\'s swings, 0.08% (20 pts on Nifty)', def: { ...V, room: 'sw0.08' } },
+    { id: 'pd0.08', name: '+ room rule: prev day H/L only, 0.08%', def: { ...V, room: 'pd0.08' } },
+    { id: 'sw0.04', name: '+ room rule: H/L + swings, 0.04% (10 pts)', def: { ...V, room: 'sw0.04' } },
+    { id: 'sw0.15', name: '+ room rule: H/L + swings, 0.15% (about 40 pts)', def: { ...V, room: 'sw0.15' } },
+    { id: 'sw0.3', name: '+ room rule: H/L + swings, 0.30% (about 75 pts)', def: { ...V, room: 'sw0.3' } },
+    { id: 'base-idx', name: 'VWAP alone from 11:30, Nifty + Bank Nifty only', def: { ...V, indexOnly: true } },
+    { id: 'sw0.08-idx', name: '+ room rule 0.08% with swings, Nifty + Bank Nifty only', def: { ...V, indexOnly: true, room: 'sw0.08' } },
+    { id: 'td0.04', name: "TODAY'S SWINGS ONLY, 0.04% (10 pts)", def: { ...V, room: 'td0.04' } },
+    { id: 'td0.08', name: "TODAY'S SWINGS ONLY, 0.08% (20 pts)", def: { ...V, room: 'td0.08' } },
+    { id: 'td0.15', name: "TODAY'S SWINGS ONLY, 0.15% (about 40 pts)", def: { ...V, room: 'td0.15' } },
+    { id: 'td0.08-idx', name: "TODAY'S SWINGS ONLY, 0.08%, Nifty + Bank Nifty only", def: { ...V, indexOnly: true, room: 'td0.08' } },
+    { id: 'td-blocked', name: "Only the trades the today's-swings 0.08% rule BLOCKS", def: { ...V, onlyBlocked: 'td0.08' } },
+    { id: 'blocked', name: 'Only the trades the 0.08% rule BLOCKS (what is removed)', def: { ...V, onlyBlocked: 'sw0.08' } },
+  ];
+  let sdr = 777; const rr = () => { sdr = (Math.imul(sdr, 1664525) + 1013904223) >>> 0; return sdr / 4294967296; };
+  const erf = z => { const t = 1 / (1 + 0.3275911 * Math.abs(z)), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z); return z >= 0 ? y : -y; };
+  const control = (base, P, actual, n) => {
+    if (n < 100) return { ctrl: NaN, p: NaN };
+    const nets = [];
+    for (let k = 0; k < 6; k++) for (const t of simulate(base.map(c => ({ ...c, dir: rr() < 0.5 ? -c.dir : c.dir })), P)) nets.push(t.net);
+    const m = nets.reduce((a, b) => a + b, 0) / nets.length, sd = Math.sqrt(nets.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, nets.length - 1));
+    return { ctrl: m, p: 0.5 * (1 - erf((actual - m) / (sd / Math.sqrt(n)) / Math.SQRT2)) };
+  };
+  const quarter = ts => { const d = new Date(ts + 19800000); return d.getUTCFullYear() + 'Q' + (Math.floor(d.getUTCMonth() / 3) + 1); };
+  const cands = d => {
+    if (!d.onlyBlocked) return candidates(d);
+    const { onlyBlocked, ...rest } = d;
+    return candidates(rest).filter(c => c.u.room[onlyBlocked][c.i] & (c.dir > 0 ? 1 : 2));
+  };
+  const rows = defs.map(d => {
+    const base = cands(d.def), out = { ...d, signals: base.length, raw: rawEdge(base), res: {} };
+    for (const [m] of SCEN) {
+      const tr = simulate(base, MODELS[m]), st = stats(tr, CUT), c = control(base, MODELS[m], st.avg, st.n);
+      const byQ = new Map(); tr.forEach(t => byQ.set(quarter(t.ts), (byQ.get(quarter(t.ts)) || 0) + t.net));
+      out.res[m] = { tr, st, ...c, qPos: [...byQ.values()].filter(v => v > 0).length, qN: byQ.size };
+    }
+    return out;
+  });
+  const T = [];
+  T.push('# Room-to-the-next-level rule: no CE just under resistance, no PE just above support' + NLr);
+  T.push('Generated ' + new Date().toISOString().slice(0, 10) + ' by `DATA=' + SUF + ' MAXPOS=' + MAXPOS + ' node tools/bt_strategies.mjs srroom`. ' + U.length + ' symbols, 15-minute candles, ' + new Date(T0).toISOString().slice(0, 10) + ' to ' + new Date(T1).toISOString().slice(0, 10) + '.' + NLr);
+  T.push('**The rule.** Before a CE, look for resistance above the price: the previous day\'s high and the swing highs formed so far today (a 15m candle whose high is the highest of the two candles either side, known two candles later). If one is within D above the price, skip the CE. PE: the same with the previous day\'s low and today\'s swing lows below the price. D is a share of the price: 0.08% is 20 points on a 25,000 Nifty and about 45 points on Bank Nifty. Applied on top of the current default (VWAP alone, entries 11:30-14:30).' + NLr);
+  T.push('**Engine.** As in every earlier report: signal on the candle close, filled at the next open, ADX >= 20, ATM option, 10,000 Rs premium, stop -30% / target +30%, squared off at 15:15, one position per underlying, ' + (MAXPOS >= 99 ? 'no limit on open positions' : 'at most ' + MAXPOS + ' open') + ', full charges, **modelled option prices** (volatility-scaled premium, round-trip spread 0/1/2%). p = against a coin flip on the same entry bars.' + NLr);
+  T.push('| Rule | Spread | Trades | Avg Rs/trade | PF | Win | First 60% / last 40% | Coin flip | p | Quarters + | Move 1h (bps) |' + NLr + '|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const x of rows) for (const [m, label] of SCEN) {
+    const r = x.res[m], st = r.st;
+    T.push('| ' + x.name + ' | ' + label + ' | ' + st.n + ' | ' + (st.n ? '**' + f0r(st.avg) + '**' : '-') + ' | ' + st.pf.toFixed(2) + ' | ' + st.win.toFixed(0) + '% | ' + (st.nFirst ? f0r(st.first) : '-') + ' / ' + (st.nLast ? f0r(st.last) : '-') + ' | ' + (Number.isFinite(r.ctrl) ? f0r(r.ctrl) : '-') + ' | ' + (Number.isFinite(r.p) ? r.p.toFixed(3) : '-') + ' | ' + r.qPos + ' of ' + r.qN + ' | ' + x.raw.bps.toFixed(1) + ' |');
+  }
+  T.push('');
+  const g = (id, m = 'sd_vol_sp1') => rows.find(x => x.id === id).res[m].st;
+  const yr = ts => String(new Date(ts + 19800000).getUTCFullYear());
+  const side = a => a.length ? a.length + ' trades, ' + f0r(a.reduce((x, t) => x + t.net, 0) / a.length) + ' Rs' : '-';
+  T.push('## Summary (1% spread)' + NLr);
+  T.push('- Current default: **' + f0r(g('base').avg) + '** Rs per trade over ' + g('base').n + ' trades, total ' + f0r(g('base').net) + ' Rs.');
+  T.push('- With the 0.08% room rule (previous day H/L + today\'s swings): **' + f0r(g('sw0.08').avg) + '** Rs per trade over ' + g('sw0.08').n + ' trades, total ' + f0r(g('sw0.08').net) + ' Rs. The trades it removes averaged **' + f0r(g('blocked').avg) + '** Rs (' + g('blocked').n + ' trades).');
+  T.push('- Indices only: ' + f0r(g('base-idx').avg) + ' Rs (' + g('base-idx').n + ' trades) without the rule, ' + f0r(g('sw0.08-idx').avg) + ' Rs (' + g('sw0.08-idx').n + ') with it.');
+  const tr = rows.find(x => x.id === 'sw0.08').res.sd_vol_sp1.tr, tb = rows.find(x => x.id === 'base').res.sd_vol_sp1.tr;
+  T.push('- By year, default vs with the rule: ' + [...new Set(tb.map(t => yr(t.ts)))].sort().map(y => y + ' ' + f0r(tb.filter(t => yr(t.ts) === y).reduce((a, t) => a + t.net, 0) / Math.max(1, tb.filter(t => yr(t.ts) === y).length)) + ' / ' + f0r(tr.filter(t => yr(t.ts) === y).reduce((a, t) => a + t.net, 0) / Math.max(1, tr.filter(t => yr(t.ts) === y).length))).join(' | '));
+  T.push('- With the rule, BUY CE: ' + side(tr.filter(t => t.dir > 0)) + ' | BUY PE: ' + side(tr.filter(t => t.dir < 0)));
+  T.push('');
+  fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'reports', 'sr_room_rule_backtest' + TAG + '.md'), T.join(NLr) + NLr);
+  console.log(T.join(NLr));
   process.exit(0);
 }
 

@@ -13,12 +13,7 @@ import { askA, sendChat } from './chat.js';
 import { PAGES, parseRoute, hashFor, titleFor } from './route.js';
 import { initTiles } from './tiles.js';
 import { initTilt } from './tilt.js';
-import {
-  toggleStrat, btFetchData, runBacktest, btReset, filterTrades,
-  initReplay, rStep, togglePlay, getAIReview, askAIQa,
-  saveBacktestResult, loadBacktestHistory, onBtTimeframeChange,
-  updateBTSegment, applyBtLotSize
-} from './backtest.js';
+import { initBacktest, onBacktestShown } from './backtest.js';
 import { loadLotSizes } from './lot-sizes.js';
 import {
   refreshPaperTrading, resetPaperTrading, paperTradingLoop, _fetchDayStats,
@@ -92,19 +87,9 @@ export function switchTab(t, { fromRoute = false } = {}) {
   if (t === 'nifty') fetchGlobalCues();
   if (t === 'live') refreshLive();
   if (t === 'screener') refreshScreener();
+  if (t === 'backtest') { initBacktest(); onBacktestShown(); }
 }
 
-const BT_TABS = ['bt-setup', 'bt-results', 'bt-trades', 'bt-chart', 'bt-replay', 'bt-accuracy'];
-export function switchBTTab(t) {
-  document.querySelectorAll('.bt-tab').forEach((el, i) => {
-    el.classList.toggle('active', BT_TABS[i] === t);
-  });
-  BT_TABS.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = id === t ? 'block' : 'none';
-  });
-  if (t === 'bt-chart' && State.tvChart) State.tvChart.timeScale().fitContent();
-}
 
 /* ═══════════════════════════════════════════
    INIT
@@ -135,8 +120,7 @@ window.addEventListener('load', async () => {
   fetchGlobalCues();
   setInterval(() => { if (!document.hidden) fetchGlobalCues(); }, 60000);   // used to load once and never again
   refreshNiftySignal();
-  loadBacktestHistory();
-  loadLotSizes().then(applyBtLotSize); // current lot sizes from the exchange list, not hardcoded
+  loadLotSizes();                   // current lot sizes from the exchange list, not hardcoded
 
   DOM.setText('nticker', 'Welcome to R-Yugan AI — loading live Nifty 50 signal...');
 });
@@ -166,21 +150,6 @@ window.qs = qs;
 window.generateMorningBrief = generateMorningBrief;
 window.analyzeFO = analyzeFO;
 window.loadSectors = loadSectors;
-window.switchBTTab = switchBTTab;
-window.btFetchData = btFetchData;
-window.toggleStrat = toggleStrat;
-window.runBacktest = runBacktest;
-window.btReset = btReset;
-window.filterTrades = filterTrades;
-window.saveBacktestResult = saveBacktestResult;
-window.onBtTimeframeChange = onBtTimeframeChange;
-window.updateBTSegment = updateBTSegment;
-window.applyBtLotSize = applyBtLotSize;
-window.initReplay = initReplay;
-window.rStep = rStep;
-window.togglePlay = togglePlay;
-window.getAIReview = getAIReview;
-window.askAIQa = askAIQa;
 window.askA = askA;
 window.sendChat = sendChat;
 window.ptSetDir = ptSetDir;

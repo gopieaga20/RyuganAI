@@ -648,296 +648,89 @@
 
       <!-- ══════ TAB: BACKTEST ══════ -->
       <section class="tab-pane" id="tab-backtest">
-        <div class="bt-tabs">
-          <button class="bt-tab active" onclick="switchBTTab('bt-setup')">Setup</button>
-          <button class="bt-tab" onclick="switchBTTab('bt-results')">Results</button>
-          <button class="bt-tab" onclick="switchBTTab('bt-trades')">Trades</button>
-          <button class="bt-tab" onclick="switchBTTab('bt-chart')">Chart</button>
-          <button class="bt-tab" onclick="switchBTTab('bt-replay')">Replay</button>
-          <button class="bt-tab" onclick="switchBTTab('bt-accuracy')">Accuracy</button>
+        <div class="card mb12">
+          <div class="card-title">Strategy backtest <span class="pill">15-minute candles · option model</span></div>
+          <div class="sc-s" style="line-height:1.5">Pick one or more of the app's strategies, the symbols and the dates, and see how buying the ATM CE / PE on their calls would have done.
+            Same rules as the app: a call is read on a candle's close and entered at the next candle's open, inside the entry window, with ADX at or above the minimum; one trade per symbol at a time; squared off at 15:15.
+            <b>Option prices are modelled</b> (no historical option prices exist): ATM premium as a share of the price (0.55% for indices, about 2% for stocks scaled by each stock's volatility), delta 0.5, time decay, full option charges plus the bid-ask spread you set.
+            A result is only worth something if it clearly beats the <b>coin flip on the same candles</b>.</div>
+        </div>
+        <div class="g2 mb12">
+          <div class="card">
+            <div class="card-title">Symbols</div>
+            <div id="bt-syms" class="bt-chips"></div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+              <input id="bt-add-sym" class="inp" placeholder="Add a stock, e.g. TATAMOTORS" style="max-width:220px">
+              <button type="button" class="btn btn-ghost btn-sm" id="bt-add-btn">Add</button>
+            </div>
+            <div class="card-title" style="margin-top:14px">Period</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+              <div class="fg"><label>From</label><input type="date" id="bt-from"></div>
+              <div class="fg"><label>To</label><input type="date" id="bt-to"></div>
+            </div>
+            <div id="bt-quick" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+              <button type="button" class="btn btn-ghost btn-sm" data-days="30">1M</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-days="91">3M</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-days="182">6M</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-days="365">1Y</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-days="730">2Y</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-days="1460">4Y</button>
+            </div>
+            <div class="sc-s" style="margin-top:6px">Angel keeps about 4 years of 15-minute candles. Long ranges load in a few seconds per symbol.</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Strategies</div>
+            <div id="bt-strats" class="bt-chips"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
+              <div class="fg"><label>Call when</label>
+                <select id="bt-rule"><option value="all">All selected agree</option><option value="score">Weighted score reaches</option></select></div>
+              <div class="fg" id="bt-minscore-wrap"><label>Score at least</label><input type="number" id="bt-minscore" value="3" min="1" max="12" style="width:70px"></div>
+              <div class="fg"><label>Min ADX</label><input type="number" id="bt-adx" value="20" min="0" max="60" style="width:70px"></div>
+            </div>
+            <div class="sc-s" style="margin-top:6px">Ticked by default: the strategies switched on in Profile. Support/resistance carries weight 0 in a weighted score.</div>
+          </div>
+        </div>
+        <div class="card mb12">
+          <div class="card-title">Trade settings</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <div class="fg"><label>Entries from</label><input type="time" id="bt-entry-from" step="900"></div>
+            <div class="fg"><label>Entries until</label><input type="time" id="bt-entry-to" step="900"></div>
+            <div class="fg"><label>Premium per trade (₹)</label><input type="number" id="bt-premium" value="10000" min="1000" step="1000"></div>
+            <div class="fg"><label>Stop (% of premium)</label><input type="number" id="bt-sl" value="30" min="5" max="90"></div>
+            <div class="fg"><label>Target (% of premium)</label><input type="number" id="bt-tp" value="30" min="5" max="300"></div>
+            <div class="fg"><label>Bid-ask spread (%)</label><input type="number" id="bt-spread" value="1" min="0" max="10" step="0.5"></div>
+          </div>
+          <div class="bt-actions mt12" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary btn-lg" id="bt-run">RUN BACKTEST ▶</button>
+            <span class="sc-s" id="bt-progress-text"></span>
+          </div>
+          <div class="prog-bar mt8"><div class="prog-fill" id="bt-prog" style="width:0%"></div></div>
         </div>
 
-        <!-- BT SETUP -->
-        <div id="bt-setup">
+        <div id="bt-out" style="display:none">
+          <div class="card mb12">
+            <div class="card-title">Result <span class="sc-s" id="bt-o-what" style="font-weight:400"></span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px" id="bt-o-cards"></div>
+            <div style="margin-top:10px;font-weight:600" id="bt-o-verdict"></div>
+            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+              <button type="button" class="btn btn-primary btn-sm" id="bt-save" disabled>Save result</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="bt-csv">Download trades (CSV)</button>
+            </div>
+          </div>
+          <div class="card mb12"><div class="card-title">Equity curve (cumulative net P&amp;L)</div><canvas id="bt-equity" style="width:100%;height:220px;display:block"></canvas></div>
           <div class="g2 mb12">
-            <div class="card">
-              <div class="card-title">Data Configuration</div>
-              <div class="filter-bar flex-wrap mb12">
-                <div class="fg"><label>Symbol</label>
-                  <select id="bt-sym" onchange="applyBtLotSize()">
-                    <option value="^NSEI">Nifty 50</option>
-                    <option value="^NSEBANK">Bank Nifty</option>
-                    <option value="^BSESN">Sensex</option>
-                    <option value="RELIANCE.NS">Reliance</option>
-                    <option value="HDFCBANK.NS">HDFC Bank</option>
-                    <option value="TCS.NS">TCS</option>
-                    <option value="INFY.NS">Infosys</option>
-                    <option value="ICICIBANK.NS">ICICI Bank</option>
-                  </select>
-                </div>
-                <div class="fg"><label>Timeframe</label>
-                  <select id="bt-tf" onchange="onBtTimeframeChange()">
-                    <option value="5m">5 Min</option>
-                    <option value="15m" selected>15 Min</option>
-                    <option value="30m">30 Min</option>
-                    <option value="1h">1 Hour</option>
-                    <option value="1d">Daily</option>
-                    <option value="1wk">Weekly</option>
-                    <option value="1mo">Monthly</option>
-                    <option value="1y">Yearly</option>
-                  </select>
-                </div>
-                <div class="fg"><label>Period</label>
-                  <select id="bt-period">
-                    <option value="1mo">1 Month</option>
-                    <option value="3mo" selected>3 Months</option>
-                    <option value="6mo">6 Months</option>
-                    <option value="1y">1 Year</option>
-                    <option value="2y">2 Years</option>
-                    <option value="5y">5 Years</option>
-                    <option value="10y">10 Years</option>
-                    <option value="max">Max</option>
-                  </select>
-                </div>
-                <div class="fg"><label>Segment</label>
-                  <select id="bt-segment" onchange="updateBTSegment()">
-                    <option value="intraday">Intraday Equity</option>
-                    <option value="fo_futures">F&amp;O Futures</option>
-                    <option value="fo_options">F&amp;O Options</option>
-                  </select>
-                </div>
-              </div>
-              <div class="filter-bar flex-wrap mb12" id="fo-lot-row" style="display:none">
-                <div class="fg"><label>Lot Size</label><input type="number" id="bt-lotsize" value="65" min="1" /></div>
-                <div class="fg"><label>Lots to Trade</label><input type="number" id="bt-lots" value="1" min="1" /></div>
-                <div class="fg" id="fo-options-row" style="display:none"><label>Option Type</label>
-                  <select id="bt-opttype">
-                    <option value="CE">Call (CE)</option>
-                    <option value="PE">Put (PE)</option>
-                  </select>
-                </div>
-              </div>
-              <div class="filter-bar flex-wrap">
-                <div class="fg"><label>Capital per Trade (₹)</label><input type="number" id="bt-capital" value="50000"
-                    min="10000" step="10000" /></div>
-                <button class="btn btn-primary" onclick="btFetchData()" id="bt-fetch-btn">FETCH DATA ▶</button>
-              </div>
-              <div class="prog-bar mt8">
-                <div class="prog-fill" id="bt-prog" style="width:0%"></div>
-              </div>
-              <div class="data-status mt8" id="bt-data-status">Click FETCH DATA to load from Yahoo Finance</div>
-            </div>
-
-            <div class="card">
-              <div class="card-title">Strategy Selection</div>
-              <!-- Intraday strategies -->
-              <div id="strat-intraday">
-                <div class="strat-grid">
-                  <div class="strat-card sel" id="sc-ema" onclick="toggleStrat('ema')">
-                    <div class="strat-name">EMA Crossover</div>
-                    <div class="strat-desc">9/21/50 EMA + RSI + VWAP triple-confirm</div>
-                  </div>
-                  <div class="strat-card sel" id="sc-orb" onclick="toggleStrat('orb')">
-                    <div class="strat-name">ORB Breakout</div>
-                    <div class="strat-desc">Opening Range Breakout with volume filter</div>
-                  </div>
-                  <div class="strat-card sel" id="sc-smc" onclick="toggleStrat('smc')">
-                    <div class="strat-name">SMC FVG Bounce</div>
-                    <div class="strat-desc">Smart Money Concepts — Fair Value Gap</div>
-                  </div>
-                  <div class="strat-card" id="sc-bb" onclick="toggleStrat('bb')">
-                    <div class="strat-name">BB Squeeze</div>
-                    <div class="strat-desc">Bollinger Band squeeze breakout</div>
-                  </div>
-                  <div class="strat-card" id="sc-rsi" onclick="toggleStrat('rsi')">
-                    <div class="strat-name">RSI Reversal</div>
-                    <div class="strat-desc">RSI oversold/overbought mean reversion</div>
-                  </div>
-                </div>
-              </div>
-              <!-- F&O strategies -->
-              <div id="strat-fo" style="display:none">
-                <div class="strat-grid">
-                  <div class="strat-card sel" id="sc-straddle" onclick="toggleStrat('straddle')">
-                    <div class="strat-name">Short Straddle</div>
-                    <div class="strat-desc">Low IV + Neutral price — Sell ATM CE+PE</div>
-                  </div>
-                  <div class="strat-card sel" id="sc-bull_spread" onclick="toggleStrat('bull_spread')">
-                    <div class="strat-name">Bull Call Spread</div>
-                    <div class="strat-desc">Bullish signal — Buy ATM CE, Sell OTM CE</div>
-                  </div>
-                  <div class="strat-card sel" id="sc-bear_spread" onclick="toggleStrat('bear_spread')">
-                    <div class="strat-name">Bear Put Spread</div>
-                    <div class="strat-desc">Bearish signal — Buy ATM PE, Sell OTM PE</div>
-                  </div>
-                  <div class="strat-card" id="sc-iron_condor" onclick="toggleStrat('iron_condor')">
-                    <div class="strat-name">Iron Condor</div>
-                    <div class="strat-desc">Range-bound — Sell OTM strangle + hedges</div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <div class="card"><div class="card-title">By symbol</div><div class="tbl-wrap" id="bt-o-sym"></div></div>
+            <div class="card"><div class="card-title">CE vs PE, and how trades ended</div><div class="tbl-wrap" id="bt-o-side"></div></div>
           </div>
-
-          <!-- Parameter tuning -->
+          <div class="card mb12"><div class="card-title">By month</div><div class="tbl-wrap" id="bt-o-month" style="max-height:360px;overflow:auto"></div></div>
           <div class="card mb12">
-            <div class="card-title">Strategy Parameters</div>
-            <div class="param-grid">
-              <div class="param-group">
-                <div class="pg-title">EMA Crossover</div>
-                <div class="filter-bar flex-wrap">
-                  <div class="fg"><label>Fast EMA</label><input type="number" id="ema-f" value="9" min="3" max="20" />
-                  </div>
-                  <div class="fg"><label>Slow EMA</label><input type="number" id="ema-s" value="21" min="10" max="50" />
-                  </div>
-                  <div class="fg"><label>SL (ATR ×)</label><input type="number" id="ema-sl" value="1.5" step="0.1"
-                      min="0.5" /></div>
-                  <div class="fg"><label>TP (ATR ×)</label><input type="number" id="ema-tp" value="3.0" step="0.1"
-                      min="1.0" /></div>
-                </div>
-              </div>
-              <div class="param-group">
-                <div class="pg-title">ORB / BB</div>
-                <div class="filter-bar flex-wrap">
-                  <div class="fg"><label>ORB Vol Filter</label><input type="number" id="orb-v" value="1.5" step="0.1"
-                      min="1" /></div>
-                  <div class="fg"><label>BB Period</label><input type="number" id="bb-p" value="20" min="10" max="50" />
-                  </div>
-                  <div class="fg"><label>BB Std Dev</label><input type="number" id="bb-std" value="2" step="0.1"
-                      min="1" /></div>
-                  <div class="fg"><label>BB Squeeze</label><input type="number" id="bb-sq" value="1.5" step="0.1"
-                      min="0.5" /></div>
-                </div>
-              </div>
-            </div>
-            <div class="bt-actions mt12">
-              <button class="btn btn-primary btn-lg" onclick="runBacktest()" id="bt-run-btn" disabled>RUN BACKTEST
-                ▶▶</button>
-              <button class="btn btn-ghost" onclick="btReset()">RESET</button>
-              <span class="bt-status-text" id="bt-status"></span>
-            </div>
+            <div class="card-title">Trades <span class="sc-s" id="bt-o-page" style="font-weight:400"></span>
+              <button type="button" class="btn btn-ghost btn-sm" id="bt-prev">◀</button><button type="button" class="btn btn-ghost btn-sm" id="bt-next">▶</button></div>
+            <div class="tbl-wrap"><table class="dtbl"><thead><tr><th>Entry</th><th>Symbol</th><th>Side</th><th>Price in</th><th>Price out</th><th>Exit</th><th>Premium</th><th>Net</th><th>Ended</th></tr></thead>
+              <tbody id="bt-o-trades"></tbody></table></div>
           </div>
         </div>
-
-        <!-- BT RESULTS -->
-        <div id="bt-results" style="display:none">
-          <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
-            <button class="btn btn-sm btn-primary" onclick="saveBacktestResult()" id="bt-save-btn" disabled>💾 Save Result</button>
-          </div>
-          <div id="bt-results-content">
-            <div class="empty-state">Run backtest first</div>
-          </div>
-          <div class="card" style="margin-top:16px;">
-            <div class="card-header">Saved Backtest Runs</div>
-            <div id="bt-saved-runs"><div class="empty-state">No saved runs yet.</div></div>
-          </div>
-        </div>
-
-        <!-- BT TRADES -->
-        <div id="bt-trades" style="display:none">
-          <div class="card">
-            <div class="card-title">Trade Log
-              <span class="filter-pills">
-                <span class="fpill active" onclick="filterTrades('all',this)">All</span>
-                <span class="fpill" onclick="filterTrades('win',this)">Wins</span>
-                <span class="fpill" onclick="filterTrades('loss',this)">Losses</span>
-                <span class="fpill" onclick="filterTrades('ema',this)">EMA</span>
-                <span class="fpill" onclick="filterTrades('orb',this)">ORB</span>
-                <span class="fpill" onclick="filterTrades('smc',this)">SMC</span>
-                <span class="fpill" onclick="filterTrades('straddle',this)">Straddle</span>
-                <span class="fpill" onclick="filterTrades('bull_spread',this)">Bull Spread</span>
-                <span class="fpill" onclick="filterTrades('bear_spread',this)">Bear Spread</span>
-              </span>
-            </div>
-            <div class="trade-summary" id="trade-summary"></div>
-            <div class="tbl-wrap">
-              <table class="dtbl">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Date/Time</th>
-                    <th>Segment</th>
-                    <th>Strategy</th>
-                    <th>Dir</th>
-                    <th>Entry</th>
-                    <th>Exit</th>
-                    <th>Qty/Lots</th>
-                    <th>Gross P&L</th>
-                    <th>Charges</th>
-                    <th>Net P&L</th>
-                    <th>Reason</th>
-                  </tr>
-                </thead>
-                <tbody id="trade-body">
-                  <tr>
-                    <td colspan="12" class="empty-cell">Run backtest first</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- BT CHART -->
-        <div id="bt-chart" style="display:none">
-          <div class="card">
-            <div class="card-title">Candlestick Chart with Signals <span id="chart-strat-filter"
-                style="font-weight:400;font-size:12px;color:var(--clr-text-2)"></span></div>
-            <div id="tv-chart" style="height:520px"></div>
-          </div>
-        </div>
-
-        <!-- BT REPLAY -->
-        <div id="bt-replay" style="display:none">
-          <div class="card">
-            <div class="card-title">Bar-by-Bar Replay</div>
-            <div class="filter-bar mb12">
-              <div class="fg"><label>Select Date</label><input type="date" id="rp-date" /></div>
-              <div class="fg"><label>Speed (ms)</label><input type="number" id="rp-speed" value="400" min="100"
-                  max="2000" step="100" /></div>
-              <button class="btn btn-primary" onclick="initReplay()">LOAD DAY</button>
-              <button class="btn btn-ghost" onclick="rStep(-1)">◀ PREV</button>
-              <button class="btn btn-primary" id="rp-play" onclick="togglePlay()">▶ PLAY</button>
-              <button class="btn btn-ghost" onclick="rStep(1)">NEXT ▶</button>
-            </div>
-            <canvas id="rp-canvas"
-              style="width:100%;height:280px;display:block;background:var(--clr-chart-bg);border-radius:8px"></canvas>
-            <div class="rp-info mt8">
-              <div class="rpi"><span class="rpi-l">Time</span><span class="rpi-v" id="rp-t">--</span></div>
-              <div class="rpi"><span class="rpi-l">Open</span><span class="rpi-v" id="rp-o">--</span></div>
-              <div class="rpi"><span class="rpi-l">High</span><span class="rpi-v up" id="rp-h">--</span></div>
-              <div class="rpi"><span class="rpi-l">Low</span><span class="rpi-v down" id="rp-l">--</span></div>
-              <div class="rpi"><span class="rpi-l">Close</span><span class="rpi-v" id="rp-c">--</span></div>
-              <div class="rpi"><span class="rpi-l">RSI</span><span class="rpi-v" id="rp-rsi">--</span></div>
-              <div class="rpi"><span class="rpi-l">Signal</span><span class="rpi-v" id="rp-sig">--</span></div>
-              <div class="rpi"><span class="rpi-l">Day P&L</span><span class="rpi-v" id="rp-pnl">₹0</span></div>
-              <div class="rpi"><span class="rpi-l">Bar</span><span class="rpi-v" id="rp-idx">--</span></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- BT ACCURACY -->
-        <div id="bt-accuracy" style="display:none">
-          <div class="card mb12">
-            <div class="card-title">AI Backtest Review</div>
-            <div class="perf-summary">
-              <div class="ps-item"><span class="ps-l">Trades</span><span class="ps-v" id="ps-trades">--</span></div>
-              <div class="ps-item"><span class="ps-l">Win Rate</span><span class="ps-v" id="ps-wr">--%</span></div>
-              <div class="ps-item"><span class="ps-l">Net P&L</span><span class="ps-v" id="ps-pnl">--</span></div>
-              <div class="ps-item"><span class="ps-l">Sharpe</span><span class="ps-v" id="ps-sharpe">--</span></div>
-            </div>
-            <div class="filter-bar mt8">
-              <button class="btn btn-primary" id="ai-review-btn" onclick="getAIReview()" disabled>GET AI REVIEW</button>
-              <div class="fg"><input type="text" id="ai-qa-input" placeholder="Ask anything about this backtest..." />
-              </div>
-              <button class="btn btn-ghost" onclick="askAIQa()">ASK ▶</button>
-            </div>
-            <div class="ai-review-box mt8" id="ai-review-area">Run a backtest and click Get AI Review</div>
-          </div>
-          <div id="bt-acc-content">
-            <div class="empty-state">Run backtest to see accuracy breakdown</div>
-          </div>
-        </div>
+        <div class="card"><div class="card-title">Saved runs</div><div class="tbl-wrap" id="bt-saved"></div></div>
       </section>
 
       <!-- ══════ TAB: AI ANALYST ══════ -->

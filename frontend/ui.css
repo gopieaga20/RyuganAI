@@ -988,3 +988,10 @@ html, body, .app, .layout, .main { background: var(--page); }
 .scr-chk { font-size: 12px; padding: 2px 0; } .scr-chk i { opacity: .7; font-style: normal; }
 .scr-chk.scr-pass span { color: var(--up); } .scr-chk.scr-fail span { color: var(--down); } .scr-chk.scr-na { opacity: .6; }
 .scr-actions { white-space: nowrap; }
+
+/* ───── Backtest page ───── */
+.bt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.bt-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; cursor: pointer; user-select: none; }
+.bt-chip:has(input:checked) { border-color: var(--accent); background: var(--clr-blue-lt); }
+.bt-chip i { opacity: .6; font-style: normal; }
+#bt-quick .btn.active { background: var(--accent); color: #fff; }
