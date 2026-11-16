@@ -205,7 +205,7 @@ function addSymbol() {
   readRows();
   const g = { sl: num('as-sl', 30) / 100, tp: num('as-tp', 30) / 100, lots: Math.max(1, Math.round(num('as-lots', 1))) };
   const day = Math.max(1, Math.round(num('as-stock-day', 1))), product = $('as-product').value;
-  const on = /^(NIFTY( 50)?|BANK ?NIFTY)$/.test(sym) || $('as-auto-stocks').checked;       // same default as the server: indices trade, stocks only with "Auto-trade stocks"
+  const on = /^(NIFTY( 50)?|BANK ?NIFTY|HDFCBANK|ICICIBANK|ITC|BHARTIARTL)$/.test(sym) || $('as-auto-stocks').checked;       // same default as the server (autotrader.DEFAULT_SYMBOLS): indices and four chosen stocks trade, other stocks only with "Auto-trade stocks"
   settingsRows.push({ symbol: sym, underlying: sym.replace(/\s+/g, ''), lot_size: null, tradable: true,
     default: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, max_per_day: day, product, enabled: on }, value: { sl_pct: g.sl, tp_pct: g.tp, lots: g.lots, enabled: on, max_per_day: day, product } });
   input.value = ''; renderSettingsRows();

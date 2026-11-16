@@ -66,7 +66,9 @@ DEFAULTS = {
 # reports/vwap_stress_test_slots99_1500d.md); every other underlying is alert-only until "Auto-trade stocks" is switched on or the stock is ticked in
 # Settings. A per-stock tick or untick always wins. Same-day exit is the global default product (overnight gaps cost more than carrying earned).
 INDEX_UNDERLYINGS = ("NIFTY", "BANKNIFTY")
-DEFAULT_SYMBOLS: dict = {}
+# 16 Nov 2026, the owner's choice after replaying the day: these four stocks are auto-traded by default too (their calls were the profitable ones that day;
+# one day is not a backtest). A per-stock tick or untick in Settings still wins.
+DEFAULT_SYMBOLS: dict = {und: {"enabled": True} for und in ("HDFCBANK", "ICICIBANK", "ITC", "BHARTIARTL")}
 
 
 def default_enabled(cfg: dict, und) -> bool:

@@ -494,12 +494,15 @@ def test_built_in_defaults_from_the_reversal_study():
     base = {**at.DEFAULTS, "enabled": True}
     for und in ("NIFTY", "BANKNIFTY"):
         assert at.symbol_params(base, und)["enabled"] is True          # the indices trade automatically
-    for und in ("HDFCBANK", "SBIN", "TCS", "RELIANCE"):
+    for und in ("SBIN", "TCS", "RELIANCE"):
         assert at.symbol_params(base, und)["enabled"] is False         # stocks are alert-only by default
+    for und in ("HDFCBANK", "ICICIBANK", "ITC", "BHARTIARTL"):
+        assert at.symbol_params(base, und)["enabled"] is True          # ... except the four the owner chose (16 Nov 2026)
     assert at.symbol_params({**base, "auto_stocks": True}, "TCS")["enabled"] is True
     # a per-stock choice always wins, both ways
     on = {**base, "symbols": at.clean_symbols({"SBIN": {"enabled": True}, "BANKNIFTY": {"enabled": False}})}
-    assert at.symbol_params(on, "SBIN")["enabled"] is True and at.symbol_params(on, "HDFCBANK")["enabled"] is False
+    assert at.symbol_params(on, "SBIN")["enabled"] is True and at.symbol_params(on, "LT")["enabled"] is False
+    assert at.symbol_params({**base, "symbols": at.clean_symbols({"ITC": {"enabled": False}})}, "ITC")["enabled"] is False   # unticking a default stock wins
     assert at.symbol_params(on, "BANKNIFTY")["enabled"] is False
     off = {**base, "auto_stocks": True, "symbols": at.clean_symbols({"TCS": {"enabled": False}})}
     assert at.symbol_params(off, "TCS")["enabled"] is False and at.symbol_params(off, "ITC")["enabled"] is True
