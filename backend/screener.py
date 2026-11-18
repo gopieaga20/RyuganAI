@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 import auth
 import delivery
+import week52
 import screener_data as sdata
 import screener_fund as sfund
 import screener_tech as stech
@@ -34,6 +35,8 @@ DEFAULTS = {
     "max_delivery_positions": 5,
     "intraday_feed": False,       # nightly: replace the intraday scan list
     "intraday_feed_size": 10,
+    "w52_break_pts": 20.0,        # 52-week lists: a close up to this many rupees beyond the 52-week high / low
+    "w52_near_pts": 30.0,         # ... or up to this many rupees short of it
 }
 RUN_HOUR_IST, RUN_MINUTE_IST = 18, 30
 CANDLE_GAP_S = 3.0
@@ -79,7 +82,7 @@ def clean_settings(patch: dict, current: dict) -> dict:
     """Validate a settings patch against the defaults' types and sane ranges; unknown keys are dropped."""
     out = dict(current)
     ranges = {"min_score": (0, 100), "risk_pct": (0.05, 5), "max_pct_per_position": (1, 50), "max_stop_pct": (1, 30), "min_turnover_cr": (0, 10000), "min_mcap_cr": (0, 10 ** 7),
-              "fundamentals_max_age_days": (1, 60), "max_delivery_positions": (1, 20), "intraday_feed_size": (1, 40)}
+              "fundamentals_max_age_days": (1, 60), "max_delivery_positions": (1, 20), "intraday_feed_size": (1, 40), "w52_break_pts": (0.5, 5000), "w52_near_pts": (0.5, 5000)}
     for k, v in patch.items():
         if k not in DEFAULTS or v is None:
             continue
@@ -432,6 +435,22 @@ class SettingsPatch(BaseModel):
     max_delivery_positions: Optional[int] = None
     intraday_feed: Optional[bool] = None
     intraday_feed_size: Optional[int] = None
+    w52_break_pts: Optional[float] = None
+    w52_near_pts: Optional[float] = None
+
+
+async def week52_lists(pool, settings: Optional[dict] = None) -> dict:
+    """The four 52-week lists from the stored daily candles of the F&O stocks (no network)."""
+    settings = settings or await get_settings(pool)
+    async with pool.acquire() as conn:
+        syms = [r["symbol"] for r in await conn.fetch("SELECT DISTINCT symbol FROM daily_candles WHERE symbol NOT LIKE '^%'")]
+    cmap = await load_candles(pool, syms) if syms else {}
+    return week52.lists(cmap, settings["w52_break_pts"], settings["w52_near_pts"])
+
+
+@router.get("/week52")
+async def week52_endpoint(request: Request):
+    return await week52_lists(_pool(request))
 
 
 @router.get("/results")

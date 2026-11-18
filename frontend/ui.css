@@ -995,3 +995,4 @@ html, body, .app, .layout, .main { background: var(--page); }
 .bt-chip:has(input:checked) { border-color: var(--accent); background: var(--clr-blue-lt); }
 .bt-chip i { opacity: .6; font-style: normal; }
 #bt-quick .btn.active { background: var(--accent); color: #fff; }
+#w52-tabs .btn.active { background: var(--accent); color: #fff; }

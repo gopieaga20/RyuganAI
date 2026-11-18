@@ -135,6 +135,10 @@ def build_report(d: dict) -> str:
     else:
         L.append(", ".join(f"{s} ({p})" for s, p in sorted(ev.items())[:15]))
 
+    if "week52" in d:
+        import week52
+        L += ["", "52-WEEK HIGH / LOW (F&O stocks)"] + [f"  {x}" for x in week52.telegram_lines(d.get("week52"))]
+
     news = d.get("news")
     L += ["", "HEADLINES"]
     L += [f"  - {h}" for h in (news or [])[:5]] or ["n/a"]
@@ -266,13 +270,22 @@ async def _news() -> Optional[list]:
         return None
 
 
+async def _week52(pool) -> Optional[dict]:
+    try:
+        import screener
+        return await screener.week52_lists(pool)
+    except Exception as e:
+        print(f"[WARN] premarket 52-week lists: {e}")
+        return None
+
+
 async def collect(pool, today: Optional[dt.date] = None, holiday_note: str = "") -> dict:
     today = today or autotrader.now_ist().date()
     labels = [(k, s) for k, s, _ in GLOBAL] + [CRUDE]
-    changes, vix, levels, sc, pos, ev, news = await asyncio.gather(
-        asyncio.gather(*(yahoo_change(s) for _, s in labels)), yahoo_price("^INDIAVIX"), _levels(pool), _screener(pool), _positions(pool), _events(today), _news())
+    changes, vix, levels, sc, pos, ev, news, w52 = await asyncio.gather(
+        asyncio.gather(*(yahoo_change(s) for _, s in labels)), yahoo_price("^INDIAVIX"), _levels(pool), _screener(pool), _positions(pool), _events(today), _news(), _week52(pool))
     return {"date": today, "holiday_note": holiday_note, "gap": gap_estimate({k: v for (k, _), v in zip(labels, changes)}), "vix": vix,
-            "levels": levels, "screener": sc, "positions": pos, "events": ev, "news": news}
+            "levels": levels, "screener": sc, "positions": pos, "events": ev, "news": news, "week52": w52}
 
 
 async def should_send(today: dt.date, holidays_fn: Callable = fetch_holidays) -> tuple:

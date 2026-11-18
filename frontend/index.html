@@ -796,6 +796,18 @@
             </table>
           </div>
         </div>
+        <div class="card" style="margin-bottom:12px" id="w52-card">
+          <div class="card-title">52-week high / low (F&amp;O stocks) <span class="sc-s" id="w52-asof" style="font-weight:400"></span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px" id="w52-tabs">
+            <button class="btn btn-ghost btn-sm active" data-w52="high_break">Broke above 52w high <b id="w52-n-high_break"></b></button>
+            <button class="btn btn-ghost btn-sm" data-w52="near_high">Near 52w high <b id="w52-n-near_high"></b></button>
+            <button class="btn btn-ghost btn-sm" data-w52="low_break">Broke below 52w low <b id="w52-n-low_break"></b></button>
+            <button class="btn btn-ghost btn-sm" data-w52="near_low">Near 52w low <b id="w52-n-near_low"></b></button>
+          </div>
+          <div class="tbl-wrap"><table class="dtbl"><thead><tr><th>Stock</th><th>Close</th><th>52w level</th><th>Set on</th><th>Distance (Rs)</th><th>Distance (%)</th><th>Volume vs 20d</th><th></th></tr></thead>
+            <tbody id="w52-body"><tr><td colspan="8" class="empty-cell">Loading...</td></tr></tbody></table></div>
+          <div class="sc-s" style="margin-top:6px" id="w52-note"></div>
+        </div>
         <div class="card" id="scr-settings">
           <div class="card-title">Screener settings</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
@@ -805,6 +817,8 @@
             <label class="sc-s">Max stop distance (% below entry)<input class="inp" type="number" step="0.5" data-k="max_stop_pct" min="1" max="30"></label>
             <label class="sc-s">Min average turnover (₹ crore)<input class="inp" type="number" data-k="min_turnover_cr"></label>
             <label class="sc-s">Min market cap (₹ crore)<input class="inp" type="number" data-k="min_mcap_cr"></label>
+            <label class="sc-s">52w lists: breakout up to (Rs beyond the level)<input class="inp" type="number" step="1" data-k="w52_break_pts" min="1"></label>
+            <label class="sc-s">52w lists: near = within (Rs short of the level)<input class="inp" type="number" step="1" data-k="w52_near_pts" min="1"></label>
             <label class="sc-s">Re-fetch fundamentals after (days)<input class="inp" type="number" data-k="fundamentals_max_age_days"></label>
           </div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:12px">

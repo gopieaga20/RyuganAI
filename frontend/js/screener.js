@@ -19,7 +19,25 @@ const send = (method, path, body) => api(path, { method, headers: { 'Content-Typ
 
 function note(msg, bad = false) { const el = $('scr-msg'); if (el) { el.textContent = msg || ''; el.style.color = bad ? 'var(--down)' : 'var(--tx-2, inherit)'; } }
 
+const w52 = { data: null, tab: 'high_break' };
+async function refreshWeek52() {
+  try { w52.data = await api('/api/screener/week52'); } catch (e) { DOM.setText('w52-note', 'Could not load the 52-week lists: ' + e.message); return; }
+  renderWeek52();
+}
+function renderWeek52() {
+  const d = w52.data; if (!d) return;
+  for (const k of ['high_break', 'near_high', 'low_break', 'near_low']) DOM.setText('w52-n-' + k, `(${d[k].length})`);
+  DOM.setText('w52-asof', d.asof ? `closes of ${d.asof}, ${d.checked} stocks` : '');
+  const rows = d[w52.tab] || [], high = w52.tab.endsWith('high') || w52.tab === 'high_break';
+  $('w52-body').innerHTML = rows.map(r => `<tr><td><b>${DOM.esc(r.symbol)}</b></td><td>${num(r.close)}</td><td>${num(high ? r.high52 : r.low52)}</td><td>${DOM.esc(high ? r.high_date : r.low_date)}</td>
+    <td class="${r.gap > 0 ? 'up' : r.gap < 0 ? 'down' : ''}">${r.gap > 0 ? '+' : ''}${num(r.gap)}</td><td>${r.gap_pct > 0 ? '+' : ''}${num(r.gap_pct)}%</td><td>${r.vol_ratio == null ? '--' : num(r.vol_ratio, 1) + 'x'}</td>
+    <td><button class="btn btn-ghost btn-sm" data-w52chart="${DOM.esc(r.symbol)}">Chart</button></td></tr>`).join('')
+    || `<tr><td colspan="8" class="empty-cell">${d.checked ? 'No stock in this list today.' : 'No daily candles yet: they are stored by the nightly Screener run (or press Run now).'}</td></tr>`;
+  DOM.setText('w52-note', `Breakout = the last close is above the previous 52-week high (below the low) by up to Rs ${d.break_pts}; near = up to Rs ${d.near_pts} short of it. Rupee distances: tight for expensive stocks, wide for cheap ones. Daily closes, refreshed by the nightly run.`);
+}
+
 export async function refreshScreener() {
+  refreshWeek52();
   try { data = await api('/api/screener/results'); } catch (e) { note('Could not load the screener: ' + e.message, true); return; }
   render();
   fillSettings(data.settings);
@@ -121,6 +139,8 @@ function wire() {
     if (b.dataset.act === 'chart') { const { selectSymbol } = await import('./dash.js'); window.switchTab('dash'); selectSymbol(sym + '.NS'); }
   };
   $('scr-settings').addEventListener('input', () => { $('scr-settings').dataset.dirty = '1'; });
+  for (const b of document.querySelectorAll('#w52-tabs [data-w52]')) b.onclick = () => { w52.tab = b.dataset.w52; for (const x of document.querySelectorAll('#w52-tabs [data-w52]')) x.classList.toggle('active', x === b); renderWeek52(); };
+  $('w52-body').onclick = async e => { const b = e.target.closest('button[data-w52chart]'); if (!b) return; const { selectSymbol } = await import('./dash.js'); window.switchTab('dash'); selectSymbol(b.dataset.w52chart + '.NS'); };
   $('scr-save').onclick = saveSettings;
   $('scr-restore').onclick = async () => { try { const r = await send('POST', '/api/screener/restore-universe'); note(`Scan list restored (${r.universe.length} symbols). The scanner picks it up within 5 minutes.`); } catch (e) { note(e.message, true); } };
 }
