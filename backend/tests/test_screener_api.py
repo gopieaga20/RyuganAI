@@ -210,11 +210,31 @@ def test_follow_up_steps_are_independent(monkeypatch):
     monkeypatch.setattr(sc.delivery, "after_run", boom)
     monkeypatch.setattr(sc, "apply_intraday_feed", feed)
     monkeypatch.setattr(notify, "notify", send)
+    async def w52(pool, settings=None): return {"high_break": [], "near_high": [], "low_break": [], "near_low": [], "checked": 5, "asof": "2026-11-17", "break_pts": 20, "near_pts": 30}
+    monkeypatch.setattr(sc, "week52_lists", w52)
     out = asyncio.run(sc.follow_up(None, _feed_rows(), {**sc.DEFAULTS, "intraday_feed": True}))
-    assert out["delivery"] == {"error": "db down"} and calls == ["feed", "screener"]
+    assert out["delivery"] == {"error": "db down"} and calls == ["feed", "screener", "week52"]
     calls.clear()
     asyncio.run(sc.follow_up(None, _feed_rows(), sc.DEFAULTS))
-    assert calls == ["screener"]                                                    # the scan list is untouched unless switched on
+    assert calls == ["screener", "week52"]                                          # the scan list is untouched unless switched on
+
+
+def test_evening_52_week_message_is_sent_once_per_closing_date(monkeypatch):
+    import notify
+    sent = []
+
+    async def send(pool, kind, text, key=None): sent.append((kind, key, text))
+    async def nothing(*a, **k): return {}
+    async def w52(pool, settings=None):
+        return {"high_break": [{"symbol": "ICICIBANK", "close": 1500.0, "gap": 20.0}], "near_high": [], "low_break": [], "near_low": [],
+                "checked": 218, "asof": "2026-11-05", "break_pts": 20, "near_pts": 30}
+    monkeypatch.setattr(notify, "notify", send)
+    monkeypatch.setattr(sc.delivery, "after_run", nothing)
+    monkeypatch.setattr(sc, "week52_lists", w52)
+    out = asyncio.run(sc.follow_up(None, [], sc.DEFAULTS))
+    kind, key, text = sent[-1]
+    assert kind == "week52" and key == "week52:2026-11-05" and out["week52"]["high_break"] == 1
+    assert "52-WEEK HIGH / LOW" in text and "ICICIBANK 1,500.00 (+20.0)" in text and "not a recommendation" in text
 
 
 def test_screener_applies_the_stop_cap():

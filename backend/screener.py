@@ -391,6 +391,13 @@ async def follow_up(pool, rows: list, settings: dict) -> dict:
         await notify.notify(pool, "screener", summary_text(rows, settings), key=f"screener:{dt.date.today().isoformat()}")
     except Exception as e:
         print(f"[WARN] screener summary not sent: {e}")
+    try:                                    # evening 52-week high / low lists, once per closing date (a second run the same evening does not resend)
+        w = await week52_lists(pool, settings)
+        out["week52"] = {k: len(w[k]) for k in ("high_break", "near_high", "low_break", "near_low")}
+        if w.get("checked"):
+            await notify.notify(pool, "week52", week52.evening_text(w), key=f"week52:{w['asof']}")
+    except Exception as e:
+        print(f"[WARN] 52-week lists not sent: {e}")
     return out
 
 

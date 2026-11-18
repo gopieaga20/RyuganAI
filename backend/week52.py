@@ -70,6 +70,12 @@ def lists(candle_map: dict, break_pts: float = 20.0, near_pts: float = 30.0) -> 
     return out
 
 
+def evening_text(w: dict, limit: int = 15) -> str:
+    """The evening Telegram message after the nightly run."""
+    return "\n".join([f"52-WEEK HIGH / LOW (F&O stocks)"] + telegram_lines(w, limit) +
+                      ["Daily closes. Information only, not a recommendation."])
+
+
 def telegram_lines(w: Optional[dict], limit: int = 10) -> list:
     """Short text lines for the pre-market report."""
     if not w or not w.get("checked"):
